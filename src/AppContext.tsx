@@ -4,7 +4,6 @@ import {createContext, ReactNode, useContext, useEffect, useState} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {NetworkStatus} from './types';
 
-// AppState 现在可以简化
 interface AppState {
     networkStatus: NetworkStatus;
     currentLobbyId: string | null;
