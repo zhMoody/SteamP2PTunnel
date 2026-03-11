@@ -1,4 +1,4 @@
-use crate::app_state::{AppState, TunnelState};
+use crate::app_state::AppState;
 use crate::error::{AppError, AppResult};
 use crate::steam_utils;
 use bytes::{Buf, BufMut, BytesMut};
@@ -70,8 +70,8 @@ pub fn stop_network(state: &AppState) {
         token_guard.cancel();
         *token_guard = CancellationToken::new();
     }
-    *state.state.lock() = TunnelState::Idle;
     state.connections.lock().clear();
+    state.active_handles.lock().clear();
     log::info!("网络已停止，令牌已重置。");
 }
 
@@ -83,7 +83,7 @@ pub async fn start_network_client(
     stop_network(state);
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-    // CRITICAL: Wait for authentication to be ready
+    // ... (wait for auth code)
     if !steam_utils::wait_for_auth_ready(&state.steam_client, 30).await {
         log::warn!("⚠️ 30 秒后认证仍未就绪 - 继续尝试连接");
     }
@@ -104,21 +104,18 @@ pub async fn start_network_client(
             log::info!("🔌 P2P 连接已启动，目标主机: {:?}", host_id);
 
             // 配置 P2P 连接参数
-            // 1. 禁用 ICE，优先使用 Steam Relay (SDR)，避免 5008 rendezvous 超时
             steam_utils::set_connection_config_value_int32(
                 &conn,
                 steamworks_sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable,
-                0, // 0 = 禁用, 1 = 仅直连, 2 = 全部 (在某些网络下 ICE 会干扰中继建立)
+                0,
             );
 
-            // 2. 设置初始超时时间为 120 秒 (120000 毫秒) - 中继可能需要更长时间
             steam_utils::set_connection_config_value_int32(
                 &conn,
                 steamworks_sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_TimeoutInitial,
                 120000,
             );
 
-            // 3. 设置 Idle 超时为 120 秒
             steam_utils::set_connection_config_value_int32(
                 &conn,
                 steamworks_sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_TimeoutConnected,
@@ -138,7 +135,6 @@ pub async fn start_network_client(
             let mut last_state: Option<NetworkingConnectionState> = None;
             let mut last_diagnostic = std::time::Instant::now();
 
-            // 增加等待时间到 120 秒 (1200 * 100ms)
             for attempt in 0..1200 {
                 if session_token.is_cancelled() {
                     log::warn!("⚠️ 会话被取消，停止等待循环");
@@ -157,10 +153,8 @@ pub async fn start_network_client(
                         last_state = Some(state_enum);
                     }
 
-                    // 诊断信息打印
                     if last_diagnostic.elapsed() >= std::time::Duration::from_secs(5) {
                         let handles = state.active_handles.lock();
-                        // 寻找与当前连接 remote_id 匹配的句柄（这里简化处理，打印所有活动句柄的状态）
                         for &h in handles.iter() {
                             if let Some(stats) = steam_utils::get_stats_from_handle(h) {
                                 log::info!(
@@ -182,8 +176,6 @@ pub async fn start_network_client(
                         || state_enum == NetworkingConnectionState::ProblemDetectedLocally
                     {
                         let err_msg = steam_utils::state_to_string(state_enum);
-
-                        // 获取更详细的错误原因
                         if let Some(info) = steam_utils::get_connection_info(&conn) {
                             log::error!(
                                 "❌ P2P 连接失败详情: 结束原因={}, 消息={:?}",
@@ -191,12 +183,10 @@ pub async fn start_network_client(
                                 unsafe { std::ffi::CStr::from_ptr(info.m_szEndDebug.as_ptr()) }
                             );
                         }
-
                         log::error!("❌ P2P 连接失败: {}", err_msg);
                         return Err(AppError::Network(format!("P2P 连接失败: {}", err_msg)));
                     }
                 }
-
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
 
@@ -205,7 +195,6 @@ pub async fn start_network_client(
                 return Err(AppError::Network("P2P 连接在 120 秒后超时".to_string()));
             }
 
-            // P2P 连接已建立，现在启动 client_loop
             log::info!("✓ P2P 连接已验证！启动客户端循环...");
 
             // 发送握手包
@@ -218,7 +207,14 @@ pub async fn start_network_client(
             log::info!("📤 已发送 P2P 握手包");
 
             // 添加连接到状态
-            state.connections.lock().push(conn);
+            {
+                let handle = steam_utils::get_connection_handle(&conn);
+                let mut handles = state.active_handles.lock();
+                if !handles.contains(&handle) {
+                    handles.push(handle);
+                }
+                state.connections.lock().push(conn);
+            }
 
             let state_clone = state.clone();
             let token_clone = session_token.clone();
@@ -233,12 +229,7 @@ pub async fn start_network_client(
 }
 
 pub fn start_network_host(state: &AppState) -> AppResult<()> {
-    {
-        let mut token_guard = state.cancel_token.lock();
-        token_guard.cancel();
-        *token_guard = CancellationToken::new();
-    }
-    state.connections.lock().clear();
+    stop_network(state);
 
     // CRITICAL: Wait for authentication to be ready
     log::info!("⏳ 等待 Steam 认证就绪（最多 10 秒）...");
@@ -252,7 +243,6 @@ pub fn start_network_host(state: &AppState) -> AppResult<()> {
         })
     });
 
-    // Block until the wait is complete
     wait_handle.join().expect("Auth wait thread panicked");
     log::info!("✅ 认证已确认，开始主机设置...");
 
@@ -263,7 +253,6 @@ pub fn start_network_host(state: &AppState) -> AppResult<()> {
         Ok(socket) => {
             log::info!("🖥️ 已启动主机 P2P 监听套接字");
 
-            // 设置监听套接字的初始连接超时，这样接受的连接也会继承这个配置
             steam_utils::set_listen_socket_config_value_int32(
                 &socket,
                 steamworks_sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_TimeoutInitial,
@@ -312,14 +301,23 @@ async fn host_loop(state: AppState, listen_socket: ListenSocket, session_token: 
                 }
                 ListenSocketEvent::Connected(connected) => {
                     log::info!("🤝 与 {:?} 的 P2P 握手完成！连接已建立", connected.remote());
-                    state.connections.lock().push(connected.take_connection());
+                    let conn = connected.take_connection();
+                    let handle = steam_utils::get_connection_handle(&conn);
+                    {
+                        let mut handles = state.active_handles.lock();
+                        if !handles.contains(&handle) {
+                            handles.push(handle);
+                        }
+                    }
+                    state.connections.lock().push(conn);
                 }
                 ListenSocketEvent::Disconnected(disconnected) => {
                     let remote_id = disconnected.remote().steam_id();
                     log::warn!("⚠️ P2P 客户端已断开: {:?}", remote_id);
 
-                    // 必须从活动连接列表中移除，Drop 会自动调用 CloseConnection
                     let mut conns = state.connections.lock();
+                    let mut handles = state.active_handles.lock();
+                    
                     if let Some(pos) = conns.iter().position(|c| {
                         state
                             .steam_client
@@ -329,6 +327,11 @@ async fn host_loop(state: AppState, listen_socket: ListenSocket, session_token: 
                             .and_then(|info| info.identity_remote().and_then(|id| id.steam_id()))
                             == remote_id
                     }) {
+                        let conn = &conns[pos];
+                        let handle = steam_utils::get_connection_handle(conn);
+                        if let Some(h_pos) = handles.iter().position(|&h| h == handle) {
+                            handles.remove(h_pos);
+                        }
                         conns.remove(pos);
                         log::info!("✅ 已从活动列表中清理断开的连接: {:?}", remote_id);
                     }

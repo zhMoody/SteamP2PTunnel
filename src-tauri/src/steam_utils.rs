@@ -195,9 +195,7 @@ pub fn get_stats_from_handle(
                 &mut info,
             );
 
-            let desc = std::ffi::CStr::from_ptr(info.m_szConnectionDescription.as_ptr())
-                .to_string_lossy()
-                .into_owned();
+            let desc = get_connection_type_description(&info);
 
             let state = match info.m_eState {
                 steamworks_sys::ESteamNetworkingConnectionState::k_ESteamNetworkingConnectionState_Connecting => NetworkingConnectionState::Connecting,

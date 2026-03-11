@@ -194,12 +194,14 @@ pub async fn connect_to_host(
 #[tauri::command]
 pub fn leave_lobby(state: State<'_, AppState>) {
     let lobby_id_opt = {
-        let tunnel_state = state.state.lock();
-        match *tunnel_state {
+        let mut tunnel_state = state.state.lock();
+        let id_opt = match *tunnel_state {
             TunnelState::Hosting(id) => Some(id),
             TunnelState::Joined(id) => Some(id),
             TunnelState::Idle => None,
-        }
+        };
+        *tunnel_state = TunnelState::Idle;
+        id_opt
     };
 
     net_manager::stop_network(&state);

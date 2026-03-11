@@ -206,7 +206,10 @@ async fn main() {
         }
         Ok(NetworkingConnectionState::Connected) => {
             log::info!("P2P 已连接: 句柄={:?}", connection_handle);
-            active_handles.lock().push(connection_handle);
+            let mut handles = active_handles.lock();
+            if !handles.contains(&connection_handle) {
+                handles.push(connection_handle);
+            }
         }
         Ok(NetworkingConnectionState::ClosedByPeer)
         | Ok(NetworkingConnectionState::ProblemDetectedLocally) => {
@@ -225,6 +228,7 @@ async fn main() {
             }
             if let Some(pos) = handles.iter().position(|&h| h == connection_handle) {
                 handles.remove(pos);
+                log::info!("已从活动句柄中移除。");
             }
         }
         _ => {}

@@ -1,3 +1,9 @@
+/*
+ * @Author: moody
+ * @Date: 2026-03-10 16:07:46
+ * @LastEditTime: 2026-03-11 18:28:40
+ * @FilePath: \src-tauri\tests\protocol_tests.rs
+ */
 use mcct_lib::net_manager::{TunnelPacket, HEADER_SIZE};
 
 #[test]
