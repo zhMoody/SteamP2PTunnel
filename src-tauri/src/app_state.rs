@@ -1,29 +1,63 @@
-use std::sync::{Arc, Mutex};
+/*
+ * @Author: moody
+ * @Date: 2026-01-12 01:56:40
+ * @LastEditTime: 2026-03-11 14:41:20
+ * @FilePath: \src-tauri\src\app_state.rs
+ */
+use circular_queue::CircularQueue;
+use parking_lot::Mutex;
+use serde::Serialize;
+use std::sync::Arc;
 use steamworks::networking_sockets::NetConnection;
 use steamworks::{Client, LobbyId};
-use tokio::sync::oneshot;
+use tokio_util::sync::CancellationToken;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TunnelState {
+    Idle,
+    Hosting(LobbyId),
+    Joined(LobbyId),
+}
+
+#[derive(Serialize, Clone)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub message: String,
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub steam_client: Client,
-    pub current_lobby: Arc<Mutex<Option<LobbyId>>>,
-    pub is_host: Arc<Mutex<bool>>,
+    pub state: Arc<Mutex<TunnelState>>,
     pub local_game_port: Arc<Mutex<u16>>,
-    pub stop_signal: Arc<Mutex<Option<oneshot::Sender<()>>>>,
+    pub cancel_token: Arc<Mutex<CancellationToken>>,
     pub connections: Arc<Mutex<Vec<NetConnection>>>,
+    pub active_handles: Arc<Mutex<Vec<steamworks_sys::HSteamNetConnection>>>,
+    pub logs: Arc<Mutex<CircularQueue<LogEntry>>>,
 }
 
 impl AppState {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        // CRITICAL: Initialize relay network access early
+        eprintln!("[INIT] 🔌 Initializing Steam Relay Network Access...");
+        super::steam_utils::init_relay_network_access();
+        
         let client = Client::init_app(480)?;
+        eprintln!("[INIT] ✅ Steam Client initialized");
+        
+        // CRITICAL: Initialize authentication for P2P
+        eprintln!("[INIT] 🔐 正在初始化 P2P 认证...");
+        super::steam_utils::init_authentication(&client);
 
         Ok(Self {
             steam_client: client,
-            current_lobby: Arc::new(Mutex::new(None)),
-            is_host: Arc::new(Mutex::new(false)),
+            state: Arc::new(Mutex::new(TunnelState::Idle)),
             local_game_port: Arc::new(Mutex::new(0)),
-            stop_signal: Arc::new(Mutex::new(None)),
+            cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
             connections: Arc::new(Mutex::new(Vec::new())),
+            active_handles: Arc::new(Mutex::new(Vec::new())),
+            logs: Arc::new(Mutex::new(CircularQueue::with_capacity(500))),
         })
     }
 }

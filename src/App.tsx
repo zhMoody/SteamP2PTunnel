@@ -1,7 +1,7 @@
 // src/App.tsx
 
 import {toast, Toaster} from "react-hot-toast";
-import {Activity, Server, Wifi} from "lucide-react";
+import {Activity, Server, Wifi, Terminal} from "lucide-react";
 import {useApp} from "./AppContext";
 import {ConnectionPanel} from "./components/ConnectionPanel";
 import {LobbyPanel} from "./components/LobbyPanel";
@@ -10,7 +10,7 @@ import {FriendList} from "./components/FriendList";
 import {invoke} from "@tauri-apps/api/core";
 
 function App() {
-    const {networkStatus, localPort, setCurrentLobbyId} = useApp();
+    const {networkStatus, localPort, setCurrentLobbyId, currentLobbyId} = useApp();
     const {isConnected, statusMessage, ping} = networkStatus;
 
     const handleDisconnect = async () => {
@@ -22,6 +22,8 @@ function App() {
             toast.error("断开失败: " + String(e));
         }
     };
+
+    const isInLobby = !!currentLobbyId;
 
     // @ts-ignore
     return (
@@ -70,6 +72,16 @@ function App() {
                         </div>
                     </div>
                 )}
+
+                <div className="flex items-center gap-3">
+                    <button
+                        onClick={() => invoke("open_log_window")}
+                        className="p-2.5 rounded-xl bg-slate-800/50 border border-white/5 text-slate-400 hover:text-blue-400 hover:bg-blue-500/10 transition-all active:scale-95"
+                        title="查看日誌"
+                    >
+                        <Terminal size={20} />
+                    </button>
+                </div>
             </header>
 
             <main className="flex-1 p-6 overflow-hidden min-h-0">
@@ -78,9 +90,9 @@ function App() {
                         <div className="glass-panel rounded-2xl p-6 relative overflow-hidden group shrink-0">
                             <div
                                 className="absolute top-0 right-0 p-32 bg-blue-500/5 rounded-full blur-3xl -mr-16 -mt-16 pointer-events-none group-hover:bg-blue-500/10 transition-colors duration-700"></div>
-                            {!isConnected ? <ConnectionPanel/> : <LobbyPanel onDisconnect={handleDisconnect}/>}
+                            {!isInLobby ? <ConnectionPanel/> : <LobbyPanel onDisconnect={handleDisconnect}/>}
                         </div>
-                        {isConnected && (
+                        {isInLobby && (
                             <div className="glass-panel rounded-2xl flex-1 flex flex-col overflow-hidden min-h-0">
                                 <FriendList/>
                             </div>
@@ -91,7 +103,7 @@ function App() {
                         <div className="glass-panel rounded-2xl h-full flex flex-col overflow-hidden">
                             <div className="p-6 border-b border-white/5 flex items-center justify-between shrink-0">
                                 <h2 className="text-xl font-semibold text-slate-100">房间成员</h2>
-                                {isConnected && (
+                                {isInLobby && (
                                     <span
                                         className="text-xs bg-blue-500/20 text-blue-300 px-2 py-1 rounded border border-blue-500/20">
                                         P2P Encrypted
@@ -99,7 +111,7 @@ function App() {
                                 )}
                             </div>
                             <div className="flex-1 overflow-y-auto p-0 min-h-0">
-                                {isConnected ? <MemberList/> : (
+                                {isInLobby ? <MemberList/> : (
                                     <div
                                         className="h-full flex flex-col items-center justify-center text-slate-500 gap-4">
                                         <div

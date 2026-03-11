@@ -1,10 +1,9 @@
 // src/AppContext.tsx
 
-import {createContext, ReactNode, useContext, useEffect, useState} from 'react';
+import {createContext, ReactNode, useContext, useEffect, useState, useCallback} from 'react';
 import {invoke} from '@tauri-apps/api/core';
 import {NetworkStatus} from './types';
 
-// AppState 现在可以简化
 interface AppState {
     networkStatus: NetworkStatus;
     currentLobbyId: string | null;
@@ -14,6 +13,7 @@ interface AppState {
 interface AppContextType extends AppState {
     setLocalPort: (port: number) => void;
     setCurrentLobbyId: (id: string | null) => void;
+    refreshStatus: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -24,6 +24,7 @@ const initialNetworkStatus: NetworkStatus = {
     tcpClientCount: 0,
     statusMessage: 'Initializing...',
     ping: 0,
+    connectionType: 'Unknown',
 };
 
 export const AppProvider = ({children}: { children: ReactNode }) => {
@@ -32,6 +33,18 @@ export const AppProvider = ({children}: { children: ReactNode }) => {
         currentLobbyId: null,
         localPort: parseInt(localStorage.getItem("mcct_last_port") || "25565", 10),
     });
+
+    const refreshStatus = useCallback(async () => {
+        try {
+            const status = await invoke<NetworkStatus>("get_network_status");
+            setState(prevState => ({
+                ...prevState,
+                networkStatus: status,
+            }));
+        } catch (e) {
+            console.error("Failed to get network status:", e);
+        }
+    }, []);
 
     const setLocalPort = (port: number) => {
         localStorage.setItem("mcct_last_port", port.toString());
@@ -43,26 +56,11 @@ export const AppProvider = ({children}: { children: ReactNode }) => {
     };
 
     useEffect(() => {
-        const interval = setInterval(async () => {
-            try {
-                const status = await invoke<NetworkStatus>("get_network_status");
-                setState(prevState => ({
-                    ...prevState,
-                    networkStatus: status,
-                }));
-            } catch (e) {
-                console.error("Failed to get network status:", e);
-                setState(prevState => ({
-                    ...prevState,
-                    networkStatus: {...initialNetworkStatus, statusMessage: 'Connection Error'},
-                }));
-            }
-        }, 1000);
-
+        const interval = setInterval(refreshStatus, 1000);
         return () => clearInterval(interval);
-    }, []);
+    }, [refreshStatus]);
 
-    const value = {...state, setLocalPort, setCurrentLobbyId};
+    const value = {...state, setLocalPort, setCurrentLobbyId, refreshStatus};
     return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
 

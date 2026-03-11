@@ -23,6 +23,7 @@ export interface NetworkStatus {
     tcpClientCount: number;
     statusMessage: string;
     ping: number;
+    connectionType: string;
 }
 
 export interface JoinLobbyResult {

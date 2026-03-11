@@ -1,11 +1,12 @@
-use crate::app_state::AppState;
+use crate::app_state::{AppState, TunnelState};
+use crate::error::{AppError, AppResult};
 use crate::net_manager;
+use crate::steam_utils;
 use serde::Serialize;
+use steamworks::networking_types::NetworkingConnectionState;
 use steamworks::{FriendFlags, LobbyId, LobbyType, SteamError, SteamId};
-use steamworks_sys;
 use tauri::State;
 use tokio::sync::oneshot;
-use std::mem;
 
 #[derive(Serialize, Clone)]
 pub struct FriendInfo {
@@ -23,21 +24,23 @@ pub struct LobbyInfo {
 
 #[derive(Serialize)]
 pub struct JoinLobbyResult {
-    lobby_id: String,
-    host_id: String,
+    pub lobby_id: String,
+    pub host_id: String,
 }
 
 #[derive(Serialize, Clone)]
 pub struct NetworkStatusInfo {
     #[serde(rename = "isHost")]
-    is_host: bool,
+    pub is_host: bool,
     #[serde(rename = "isConnected")]
-    is_connected: bool,
+    pub is_connected: bool,
     #[serde(rename = "tcpClientCount")]
-    tcp_client_count: usize,
+    pub tcp_client_count: usize,
     #[serde(rename = "statusMessage")]
-    status_message: String,
-    ping: i32,
+    pub status_message: String,
+    pub ping: i32,
+    #[serde(rename = "connectionType")]
+    pub connection_type: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -61,7 +64,7 @@ pub fn get_friends(state: State<'_, AppState>) -> Vec<FriendInfo> {
 }
 
 #[tauri::command]
-pub async fn create_lobby(state: State<'_, AppState>) -> Result<String, String> {
+pub async fn create_lobby(state: State<'_, AppState>) -> AppResult<String> {
     let (tx, rx) = oneshot::channel();
     {
         let matchmaking = state.steam_client.matchmaking();
@@ -75,12 +78,15 @@ pub async fn create_lobby(state: State<'_, AppState>) -> Result<String, String> 
     }
     let lobby_id = rx
         .await
-        .map_err(|_| "Canceled".to_string())?
-        .map_err(|e| format!("Failed to create lobby: {:?}", e))?;
+        .map_err(|_| AppError::Internal("Canceled".to_string()))?
+        .map_err(AppError::from)?;
+
     {
-        let mut current_lobby = state.current_lobby.lock().unwrap();
-        *current_lobby = Some(lobby_id);
+        let mut tunnel_state = state.state.lock();
+        *tunnel_state = TunnelState::Hosting(lobby_id);
+        log::info!("State updated to Hosting({})", lobby_id.raw());
     }
+
     let friends = state.steam_client.friends();
     friends.set_rich_presence("steam_display", Some("#Status_InLobby"));
     friends.set_rich_presence("connect", Some(&lobby_id.raw().to_string()));
@@ -88,7 +94,7 @@ pub async fn create_lobby(state: State<'_, AppState>) -> Result<String, String> 
 }
 
 #[tauri::command]
-pub async fn search_lobbies(state: State<'_, AppState>) -> Result<Vec<LobbyInfo>, String> {
+pub async fn search_lobbies(state: State<'_, AppState>) -> AppResult<Vec<LobbyInfo>> {
     let (tx, rx) = oneshot::channel();
     {
         let matchmaking = state.steam_client.matchmaking();
@@ -98,8 +104,9 @@ pub async fn search_lobbies(state: State<'_, AppState>) -> Result<Vec<LobbyInfo>
     }
     let lobbies = rx
         .await
-        .map_err(|_| "Canceled".to_string())?
-        .map_err(|e| format!("Failed to search: {:?}", e))?;
+        .map_err(|_| AppError::Internal("Canceled".to_string()))?
+        .map_err(AppError::from)?;
+
     let matchmaking = state.steam_client.matchmaking();
     let mut result = Vec::new();
     for lobby_id in lobbies {
@@ -117,12 +124,18 @@ pub async fn search_lobbies(state: State<'_, AppState>) -> Result<Vec<LobbyInfo>
 }
 
 #[tauri::command]
-pub async fn join_lobby(state: State<'_, AppState>, lobby_id_str: String) -> Result<JoinLobbyResult, String> {
+pub async fn join_lobby(
+    state: State<'_, AppState>,
+    lobby_id_str: String,
+) -> AppResult<JoinLobbyResult> {
     let lobby_id_u64 = lobby_id_str
         .parse::<u64>()
-        .map_err(|_| "Invalid Lobby ID")?;
+        .map_err(|_| AppError::Parse("Invalid Lobby ID".to_string()))?;
     let lobby_id = LobbyId::from_raw(lobby_id_u64);
+
+    // Use stop_network to correctly reset token and connections
     net_manager::stop_network(&state);
+
     let (tx, rx) = oneshot::channel();
     {
         let matchmaking = state.steam_client.matchmaking();
@@ -132,14 +145,23 @@ pub async fn join_lobby(state: State<'_, AppState>, lobby_id_str: String) -> Res
     }
     let joined_lobby_id = rx
         .await
-        .map_err(|_| "Canceled".to_string())?
-        .map_err(|_| format!("Failed to join lobby"))?;
+        .map_err(|_| AppError::Internal("Canceled".to_string()))?
+        .map_err(|_| AppError::Lobby(format!("Failed to join lobby {}", lobby_id_str)))?;
+
     {
-        let mut current = state.current_lobby.lock().unwrap();
-        *current = Some(joined_lobby_id);
+        let mut tunnel_state = state.state.lock();
+        *tunnel_state = TunnelState::Joined(joined_lobby_id);
+        log::info!("State updated to Joined({})", joined_lobby_id.raw());
     }
-    state.steam_client.friends().set_rich_presence("steam_display", Some("#Status_InLobby"));
-    state.steam_client.friends().set_rich_presence("connect", Some(&lobby_id_str));
+
+    state
+        .steam_client
+        .friends()
+        .set_rich_presence("steam_display", Some("#Status_InLobby"));
+    state
+        .steam_client
+        .friends()
+        .set_rich_presence("connect", Some(&lobby_id_str));
     let host_id = {
         let matchmaking = state.steam_client.matchmaking();
         matchmaking.lobby_owner(joined_lobby_id)
@@ -151,8 +173,14 @@ pub async fn join_lobby(state: State<'_, AppState>, lobby_id_str: String) -> Res
 }
 
 #[tauri::command]
-pub async fn connect_to_host(state: State<'_, AppState>, host_id_str: String, local_port: u16) -> Result<(), String> {
-    let host_id_u64 = host_id_str.parse::<u64>().map_err(|_| "Invalid Host ID")?;
+pub async fn connect_to_host(
+    state: State<'_, AppState>,
+    host_id_str: String,
+    local_port: u16,
+) -> AppResult<()> {
+    let host_id_u64 = host_id_str
+        .parse::<u64>()
+        .map_err(|_| AppError::Parse("Invalid Host ID".to_string()))?;
     let host_id = SteamId::from_raw(host_id_u64);
     let my_id = state.steam_client.user().steam_id();
     if host_id != my_id {
@@ -165,9 +193,18 @@ pub async fn connect_to_host(state: State<'_, AppState>, host_id_str: String, lo
 
 #[tauri::command]
 pub fn leave_lobby(state: State<'_, AppState>) {
+    let lobby_id_opt = {
+        let tunnel_state = state.state.lock();
+        match *tunnel_state {
+            TunnelState::Hosting(id) => Some(id),
+            TunnelState::Joined(id) => Some(id),
+            TunnelState::Idle => None,
+        }
+    };
+
     net_manager::stop_network(&state);
-    let mut current = state.current_lobby.lock().unwrap();
-    if let Some(lobby_id) = current.take() {
+
+    if let Some(lobby_id) = lobby_id_opt {
         state.steam_client.matchmaking().leave_lobby(lobby_id);
         state.steam_client.friends().clear_rich_presence();
         log::info!("Left lobby and cleared rich presence.");
@@ -175,9 +212,9 @@ pub fn leave_lobby(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-pub fn start_hosting(state: State<'_, AppState>, local_port: u16) -> Result<(), String> {
+pub fn start_hosting(state: State<'_, AppState>, local_port: u16) -> AppResult<()> {
     {
-        let mut port = state.local_game_port.lock().unwrap();
+        let mut port = state.local_game_port.lock();
         *port = local_port;
     }
     net_manager::start_network_host(&state)
@@ -189,29 +226,47 @@ pub fn stop_hosting(state: State<'_, AppState>) {
 }
 
 #[tauri::command]
-pub fn send_invite(state: State<'_, AppState>, friend_id_str: String) -> Result<(), String> {
-    let friend_id_u64 = friend_id_str.parse::<u64>().map_err(|_| "Invalid Friend ID")?;
-    let current_lobby = state.current_lobby.lock().unwrap();
-    if let Some(lobby_id) = *current_lobby {
-        let success = unsafe {
-            let mm_ptr = steamworks_sys::SteamAPI_SteamMatchmaking_v009();
-            steamworks_sys::SteamAPI_ISteamMatchmaking_InviteUserToLobby(mm_ptr, lobby_id.raw(), friend_id_u64)
-        };
-        if success { Ok(()) } else { Err("Failed to send invite".to_string()) }
+pub fn send_invite(state: State<'_, AppState>, friend_id_str: String) -> AppResult<()> {
+    let friend_id_u64 = friend_id_str
+        .parse::<u64>()
+        .map_err(|_| AppError::Parse("Invalid Friend ID".to_string()))?;
+    let tunnel_state = state.state.lock();
+
+    let lobby_id_opt = match *tunnel_state {
+        TunnelState::Hosting(id) => Some(id),
+        TunnelState::Joined(id) => Some(id),
+        TunnelState::Idle => None,
+    };
+
+    if let Some(lobby_id) = lobby_id_opt {
+        let success = steam_utils::invite_user_to_lobby(lobby_id.raw(), friend_id_u64);
+        if success {
+            Ok(())
+        } else {
+            Err(AppError::Lobby("Failed to send invite".to_string()))
+        }
     } else {
-        Err("Not in a lobby".to_string())
+        Err(AppError::Lobby("Not in a lobby".to_string()))
     }
 }
 
 #[tauri::command]
 pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
-    let lobby_id_opt = { *state.current_lobby.lock().unwrap() };
+    let tunnel_state = *state.state.lock();
+    let lobby_id_opt = match tunnel_state {
+        TunnelState::Hosting(id) => Some(id),
+        TunnelState::Joined(id) => Some(id),
+        TunnelState::Idle => None,
+    };
+
     if let Some(lobby_id) = lobby_id_opt {
         let matchmaking = state.steam_client.matchmaking();
         let friends = state.steam_client.friends();
         let members = matchmaking.lobby_members(lobby_id);
-        let connections = state.connections.lock().unwrap();
         let my_id = state.steam_client.user().steam_id();
+
+        // 获取所有活动的真实句柄
+        let active_handles = state.active_handles.lock();
 
         members
             .into_iter()
@@ -223,26 +278,22 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
 
                 if member_id == my_id {
                     ping = 0;
-                    relay = "Local".to_string();
+                    relay = "本地 (Local)".to_string();
                 } else {
-                    unsafe {
-                        let sockets = steamworks_sys::SteamAPI_SteamNetworkingSockets_SteamAPI_v012();
-                        for conn in connections.iter() {
-                            let mut conn_info: steamworks_sys::SteamNetConnectionInfo_t = mem::zeroed();
-                            if steamworks_sys::SteamAPI_ISteamNetworkingSockets_GetConnectionInfo(sockets, *(conn as *const _ as *const u32), &mut conn_info) {
-                                
-                                let identity_ptr = &conn_info.m_identityRemote as *const _ as *mut steamworks_sys::SteamNetworkingIdentity;
-                                let remote_steam_id_64 = steamworks_sys::SteamAPI_SteamNetworkingIdentity_GetSteamID64(identity_ptr);
-                                
-                                if remote_steam_id_64 == member_id.raw() {
-                                    let mut status: steamworks_sys::SteamNetConnectionRealTimeStatus_t = mem::zeroed();
-                                    let result = steamworks_sys::SteamAPI_ISteamNetworkingSockets_GetConnectionRealTimeStatus(sockets, *(conn as *const _ as *const u32), &mut status, 0, std::ptr::null_mut());
-                                    
-                                    if result == steamworks_sys::EResult::k_EResultOK {
-                                        ping = status.m_nPing;
-                                        relay = "P2P".to_string();
+                    // 遍历所有活动句柄，寻找匹配该成员 SteamID 的连接
+                    for &handle in active_handles.iter() {
+                        if let Some(stats) = steam_utils::get_stats_from_handle(handle) {
+                            // 重新通过底层 API 获取该句柄对应的 SteamID
+                            unsafe {
+                                let sockets_ptr = steamworks_sys::SteamAPI_SteamNetworkingSockets_SteamAPI_v012();
+                                let mut info: steamworks_sys::SteamNetConnectionInfo_t = std::mem::zeroed();
+                                if steamworks_sys::SteamAPI_ISteamNetworkingSockets_GetConnectionInfo(sockets_ptr, handle, &mut info) {
+                                    let remote_id = info.m_identityRemote.__bindgen_anon_1.m_steamID64;
+                                    if remote_id == member_id.raw() {
+                                        ping = stats.ping;
+                                        relay = stats.connection_type;
+                                        break;
                                     }
-                                    break;
                                 }
                             }
                         }
@@ -264,35 +315,28 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
 
 #[tauri::command]
 pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
-    let is_host = *state.is_host.lock().unwrap();
-    let connections = state.connections.lock().unwrap();
-    let is_connected = is_host || !connections.is_empty();
-    let client_count = connections.len();
+    let tunnel_state = *state.state.lock();
+    let client_count = state.connections.lock().len();
+    let is_host = matches!(tunnel_state, TunnelState::Hosting(_));
 
-    let mut ping = 0;
+    let mut ping = -1;
+    let mut connection_type = "未连接 (Not Connected)".to_string();
+    let mut is_connected = false;
 
-    if !is_host && is_connected {
-        if let Some(conn_to_host) = connections.first() {
-            unsafe {
-                let sockets = steamworks_sys::SteamAPI_SteamNetworkingSockets_SteamAPI_v012();
-                let mut status: steamworks_sys::SteamNetConnectionRealTimeStatus_t = mem::zeroed();
-                let result = steamworks_sys::SteamAPI_ISteamNetworkingSockets_GetConnectionRealTimeStatus(sockets, *(conn_to_host as *const _ as *const u32), &mut status, 0, std::ptr::null_mut());
-                
-                if result == steamworks_sys::EResult::k_EResultOK {
-                    ping = status.m_nPing;
-                } else {
-                    ping = -1;
-                }
-            }
+    // 从活动句柄中获取第一个有效句柄的状态作为概览
+    let active_handles = state.active_handles.lock();
+    if let Some(&handle) = active_handles.first() {
+        if let Some(stats) = steam_utils::get_stats_from_handle(handle) {
+            ping = stats.ping;
+            connection_type = stats.connection_type;
+            is_connected = stats.state == NetworkingConnectionState::Connected;
         }
     }
 
-    let status_message = if is_host {
-        format!("Hosting with {} players", client_count)
-    } else if is_connected {
-        "Connected to host".to_string()
-    } else {
-        "Idle".to_string()
+    let status_message = match tunnel_state {
+        TunnelState::Hosting(_) => format!("正在主持 ({} 名玩家连接)", client_count),
+        TunnelState::Joined(_) => "已加入大厅".to_string(),
+        TunnelState::Idle => "空闲".to_string(),
     };
 
     NetworkStatusInfo {
@@ -301,5 +345,6 @@ pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
         tcp_client_count: client_count,
         status_message,
         ping,
+        connection_type,
     }
 }

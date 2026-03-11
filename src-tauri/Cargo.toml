@@ -1,5 +1,5 @@
 [package]
-name = "mcct"
+name = "steam_p2p_tunnel"
 version = "0.1.0"
 description = "A Steam P2P tunneling tool for LAN games"
 authors = ["Moody"]
@@ -19,7 +19,7 @@ native-dialog = "0.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # GitHub 最新版
-steamworks = { git = "https://github.com/Noxime/steamworks-rs" }
+steamworks = "0.12.2"
 # 直接调用底层 C 接口
 steamworks-sys = "0.11"
 tokio = { version = "1", features = ["full"] }
@@ -29,3 +29,8 @@ log = "0.4"
 env_logger = "0.10"
 thiserror = "1.0"
 anyhow = "1.0"
+parking_lot = "0.12.5"
+tokio-util = "0.7.18"
+chrono = "0.4.44"
+circular-queue = "0.2.7"
+sysinfo = { version = "0.38.4", features = ["serde"] }
