@@ -65,7 +65,6 @@ function App() {
                         <div
                             className="flex items-center gap-2 text-slate-300 bg-slate-800/50 px-3 py-1.5 rounded-full border border-white/5">
                             <Activity size={14} className="text-green-400"/>
-                            {/* 【修改 3/3】改进显示逻辑，处理 ping 为 -1 (未知) 的情况 */}
                             <span>Delay: <span className="font-mono text-green-300">
                                 {ping >= 0 ? `~${ping}ms` : '...'}
                             </span></span>
