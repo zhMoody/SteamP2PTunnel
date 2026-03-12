@@ -115,6 +115,8 @@ async fn open_log_window(handle: tauri::AppHandle) {
         .title("系統日誌 (System Logs)")
         .inner_size(800.0, 600.0)
         .resizable(true)
+        .decorations(false)
+        .transparent(true)
         .build();
     }
 }
@@ -131,10 +133,10 @@ fn get_memory_usage() -> String {
 
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     if let Some(process) = sys.process(pid) {
-        // 内存单位是 KB
-        let memory_kb = process.memory();
+        // sysinfo v0.29+ 返回的是 bytes
+        let memory_bytes = process.memory();
         // 转换为 MB
-        let memory_mb = memory_kb as f64 / 1024.0;
+        let memory_mb = memory_bytes as f64 / 1024.0 / 1024.0;
         return format!("{:.2} MB", memory_mb);
     }
     "N/A".to_string()

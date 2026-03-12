@@ -12,9 +12,12 @@
 	"app": {
 		"windows": [
 			{
+				"label": "main",
 				"title": "Steam P2P Tunnel",
 				"width": 1040,
-				"height": 850
+				"height": 850,
+				"decorations": false,
+				"transparent": true
 			}
 		],
 		"security": {

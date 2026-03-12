@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-    font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
     line-height: 1.5;
     font-weight: 400;
     color-scheme: dark;
@@ -12,52 +12,80 @@
 body {
     margin: 0;
     min-height: 100vh;
-    background-color: #0f172a;
-    background-image: radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.1) 0px, transparent 50%),
-    radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.1) 0px, transparent 50%);
+    background-color: #020617;
+    background-image: 
+        radial-gradient(at 0% 0%, rgba(56, 189, 248, 0.08) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.08) 0px, transparent 50%),
+        radial-gradient(at 50% 50%, rgba(30, 41, 59, 0.5) 0px, transparent 100%);
     color: #f8fafc;
-    overflow: hidden; /* 防止 Body 滚动 */
+    overflow: hidden;
 }
 
-/* 强制显示滚动条并美化 */
-::-webkit-scrollbar {
-    width: 8px; /* 稍微加宽一点 */
-    height: 8px;
+::-webkit-scrollbar, .custom-scrollbar::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
 }
 
-::-webkit-scrollbar-track {
-    background: rgba(0, 0, 0, 0.2);
+::-webkit-scrollbar-track, .custom-scrollbar::-webkit-scrollbar-track {
+    background: transparent;
 }
 
-::-webkit-scrollbar-thumb {
+::-webkit-scrollbar-thumb, .custom-scrollbar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    transition: background 0.3s;
+}
+
+::-webkit-scrollbar-thumb:hover, .custom-scrollbar::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.2);
-    border-radius: 4px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.4); /* 悬停时更亮 */
+.no-shift-scrollbar {
+    overflow-y: auto;
+    overflow-y: overlay;
+    scrollbar-gutter: stable;
 }
 
-/* 工具类 */
+@layer utilities {
+    .xs\:block {
+        display: none;
+    }
+    @media (min-width: 480px) {
+        .xs\:block {
+            display: block;
+        }
+        .xs\:inline {
+            display: inline;
+        }
+    }
+}
+
 .glass-panel {
-    @apply bg-slate-900/60 backdrop-blur-md border border-white/5 shadow-xl;
+    @apply bg-slate-900/40 backdrop-blur-xl border border-white/10 shadow-2xl;
+}
+
+.glass-card {
+    @apply bg-white/5 backdrop-blur-lg border border-white/10 rounded-2xl shadow-lg hover:bg-white/[0.08] transition-all duration-300;
 }
 
 .input-base {
-    @apply bg-slate-950/50 border border-slate-700 rounded-lg px-4 py-3 text-white focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all;
+    @apply block w-full rounded-xl border-0 bg-slate-950/40 py-3 text-white shadow-inner ring-1 ring-inset ring-white/10 placeholder:text-slate-500 focus:ring-2 focus:ring-inset focus:ring-blue-500/50 sm:text-sm sm:leading-6 transition-all duration-300 backdrop-blur-sm;
 }
 
 .btn-primary {
-    @apply bg-blue-600 hover:bg-blue-500 text-white font-bold py-3 px-6 rounded-lg transition-all active:scale-95 shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2;
+    @apply bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-3 px-6 rounded-xl transition-all active:scale-[0.98] shadow-lg shadow-blue-500/20 flex items-center justify-center gap-2 border border-white/10;
+}
+
+.btn-secondary {
+    @apply bg-white/5 hover:bg-white/10 text-slate-200 font-medium py-2 px-4 rounded-lg transition-all active:scale-95 border border-white/10 flex items-center justify-center gap-2;
 }
 
 .btn-danger {
-    @apply bg-red-600/80 hover:bg-red-500 text-white font-bold py-3 px-6 rounded-lg transition-all active:scale-95 shadow-lg shadow-red-500/20 flex items-center justify-center gap-2;
+    @apply bg-red-500/10 hover:bg-red-500/20 text-red-400 hover:text-red-300 font-semibold py-3 px-6 rounded-xl transition-all active:scale-[0.98] border border-red-500/20 flex items-center justify-center gap-2;
 }
 
-
-.input-base {
-    @apply block w-full rounded-lg border-0 bg-white/5 py-2.5 text-white shadow-sm ring-1 ring-inset ring-white/10 placeholder:text-gray-500 focus:ring-2 focus:ring-inset focus:ring-blue-500 sm:text-sm sm:leading-6 transition-all duration-300;
+.status-badge {
+    @apply px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border;
 }
 
 .input-with-icon {
@@ -65,9 +93,23 @@ body {
 }
 
 .input-with-icon > .input-icon {
-    @apply absolute top-1/2 -translate-y-1/2 left-4 h-5 w-5 text-slate-500 pointer-events-none;
+    @apply absolute top-1/2 -translate-y-1/2 left-4 h-5 w-5 text-slate-500 pointer-events-none transition-colors duration-300;
+}
+
+.input-with-icon:focus-within > .input-icon {
+    @apply text-blue-400;
 }
 
 .input-with-icon > input {
     @apply pl-11;
+}
+
+@keyframes float {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-10px); }
+    100% { transform: translateY(0px); }
+}
+
+.animate-float {
+    animation: float 6s ease-in-out infinite;
 }

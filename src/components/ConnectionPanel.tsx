@@ -1,7 +1,7 @@
 import {useEffect, useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {toast} from "react-hot-toast";
-import {ArrowRight, Gamepad2, Link} from "lucide-react";
+import {ArrowRight, Gamepad2, Link, Sparkles} from "lucide-react";
 import {useApp} from "../AppContext";
 import {JoinLobbyResult} from "../types";
 
@@ -28,10 +28,10 @@ export function ConnectionPanel() {
             await invoke("start_hosting", {localPort});
             toast.success(`房间创建成功! ID: ${id}`, {icon: '🎮', id: toastId});
             setCurrentLobbyId(id);
-            // 立即刷新状态，强制 UI 跳转
             await refreshStatus();
-        } catch (e) {
-            toast.error("创建失败: " + String(e), {id: toastId});
+        } catch (e: any) {
+            const errorMsg = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
+            toast.error("创建失败: " + errorMsg, {id: toastId});
         } finally {
             setLoading(false);
         }
@@ -45,22 +45,21 @@ export function ConnectionPanel() {
             toast.loading("正在加入Steam房间...", {id: toastId});
             const result = await invoke<JoinLobbyResult>("join_lobby", {lobbyIdStr: lobbyIdToJoin});
 
-            toast.loading("正在连接到房主... (这可能需要长达1分钟)", {id: toastId});
+            toast.loading("正在建立 P2P 隧道... (约1分钟)", {id: toastId});
             await invoke("connect_to_host", {
                 hostIdStr: result.host_id,
                 localPort: localPort
             });
 
-            toast.success("成功加入房间!", {icon: '🚀', id: toastId});
+            toast.success("隧道已打通!", {icon: '🚀', id: toastId});
             setCurrentLobbyId(result.lobby_id);
-            // 立即刷新状态，强制 UI 跳转
             await refreshStatus();
-        } catch (e) {
-            const errorString = String(e);
-            if (errorString.includes("timed out")) {
-                toast.error("连接超时: 请确保房主在线且网络通畅。", {id: toastId});
+        } catch (e: any) {
+            const errorMsg = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
+            if (errorMsg.includes("timed out")) {
+                toast.error("连接超时: 请确保房主在线。", {id: toastId});
             } else {
-                toast.error("加入失败: " + errorString, {id: toastId});
+                toast.error("加入失败: " + errorMsg, {id: toastId});
             }
         } finally {
             setLoading(false);
@@ -68,23 +67,25 @@ export function ConnectionPanel() {
     };
 
     return (
-        <div className="space-y-6">
-            <div className="flex p-1 bg-slate-950/50 rounded-xl border border-white/5">
+        <div className="space-y-8">
+            <div className="flex p-1.5 bg-slate-950/80 rounded-2xl border border-white/5 backdrop-blur-xl shadow-inner">
                 <button onClick={() => setActiveTab('host')}
-                        className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'host' ? 'bg-slate-800 text-white shadow-sm ring-1 ring-white/10' : 'text-slate-400 hover:text-slate-200'}`}>
-                    我是房主
+                        className={`flex-1 py-3 px-2 text-[11px] sm:text-sm font-bold rounded-xl transition-all duration-300 whitespace-nowrap ${activeTab === 'host' ? 'bg-blue-600 text-white shadow-lg shadow-blue-500/20 ring-1 ring-white/20' : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'}`}>
+                    建立连接 <span className="hidden xs:inline">(房主)</span>
                 </button>
                 <button onClick={() => setActiveTab('join')}
-                        className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${activeTab === 'join' ? 'bg-slate-800 text-white shadow-sm ring-1 ring-white/10' : 'text-slate-400 hover:text-slate-200'}`}>
-                    加入游戏
+                        className={`flex-1 py-3 px-2 text-[11px] sm:text-sm font-bold rounded-xl transition-all duration-300 whitespace-nowrap ${activeTab === 'join' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-500/20 ring-1 ring-white/20' : 'text-slate-500 hover:text-slate-300 hover:bg-white/5'}`}>
+                    加入连接 <span className="hidden xs:inline">(客户端)</span>
                 </button>
             </div>
 
             {activeTab === 'host' ? (
-                <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                    <div>
-                        <label
-                            className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">本地游戏端口</label>
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-1">
+                            <Sparkles size={12} className="text-blue-500" />
+                            本地服务端口
+                        </label>
                         <div className="input-with-icon">
                             <Gamepad2 className="input-icon"/>
                             <input
@@ -95,20 +96,22 @@ export function ConnectionPanel() {
                                 placeholder="例如: 25565"
                             />
                         </div>
-                        <p className="text-xs text-slate-500 mt-2">
-                            我们将把其他人的流量转发到这个端口。
+                        <p className="px-1 text-[11px] text-slate-500 leading-relaxed">
+                            我们将通过 Steam P2P 网络将来自远端玩家的流量安全转发到您指定的本地服务端口。
                         </p>
                     </div>
-                    <button onClick={handleCreateLobby} disabled={loading} className="btn-primary w-full group">
-                        {loading ? '创建中...' : '启动房间'}
-                        {!loading && <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform"/>}
+                    <button onClick={handleCreateLobby} disabled={loading} className="btn-primary w-full group py-4 h-14">
+                        <span className="text-base font-bold tracking-tight">{loading ? '正在初始化...' : '启动 P2P 隧道'}</span>
+                        {!loading && <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform"/>}
                     </button>
                 </div>
             ) : (
-                <div className="space-y-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
-                    <div>
-                        <label
-                            className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">本地游戏端口</label>
+                <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-1">
+                            <Gamepad2 size={12} className="text-indigo-500" />
+                            映射本地端口
+                        </label>
                         <div className="input-with-icon">
                             <Gamepad2 className="input-icon"/>
                             <input
@@ -120,9 +123,11 @@ export function ConnectionPanel() {
                             />
                         </div>
                     </div>
-                    <div>
-                        <label className="block text-xs font-medium text-slate-400 mb-1.5 uppercase tracking-wider">通过房间
-                            ID 加入</label>
+                    <div className="space-y-2">
+                        <label className="flex items-center gap-2 text-[10px] font-black text-slate-500 uppercase tracking-[0.2em] ml-1">
+                            <Link size={12} className="text-indigo-500" />
+                            远程房间凭证
+                        </label>
                         <div className="input-with-icon">
                             <Link className="input-icon"/>
                             <input
@@ -130,17 +135,18 @@ export function ConnectionPanel() {
                                 value={lobbyIdInput}
                                 onChange={(e) => setLobbyIdInput(e.target.value)}
                                 className="input-base"
-                                placeholder="粘贴房主发来的ID"
+                                placeholder="粘贴房主提供的房间 ID"
                             />
                         </div>
                     </div>
                     <button onClick={() => handleJoinLobby(lobbyIdInput)} disabled={loading || !lobbyIdInput}
-                            className="btn-primary w-full group bg-green-600 hover:bg-green-500">
-                        {loading ? '连接中...' : '加入游戏'}
-                        {!loading && <ArrowRight size={18} className="group-hover:translate-x-1 transition-transform"/>}
+                            className="btn-primary w-full group from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 py-4 h-14">
+                        <span className="text-base font-bold tracking-tight">{loading ? '建立隧道中...' : '连接到隧道'}</span>
+                        {!loading && <ArrowRight size={20} className="group-hover:translate-x-1 transition-transform"/>}
                     </button>
                 </div>
             )}
         </div>
     );
 }
+
