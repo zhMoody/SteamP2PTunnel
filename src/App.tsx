@@ -1,7 +1,7 @@
 // src/App.tsx
 
 import {toast, Toaster} from "react-hot-toast";
-import {Server, Wifi, Terminal, Users, ChevronDown, ChevronUp, Settings, UserPlus} from "lucide-react";
+import {Server, Wifi, Terminal, Users, ChevronDown, ChevronUp, Settings, UserPlus, X, Check, Bell} from "lucide-react";
 import {useApp} from "./AppContext";
 import {ConnectionPanel} from "./components/ConnectionPanel";
 import {LobbyPanel} from "./components/LobbyPanel";
@@ -15,40 +15,57 @@ import {JoinLobbyResult} from "./types";
 function App() {
     const {
         networkStatus, localPort, setCurrentLobbyId, currentLobbyId,
-        pendingInvite, clearPendingInvite, refreshStatus
+        pendingInvite, richPresenceJoin,
+        clearPendingInvite, clearRichPresenceJoin, refreshStatus
     } = useApp();
     const {isConnected, statusMessage} = networkStatus;
 
     const [expandedPanel, setExpandedPanel] = useState<'control' | 'friends'>('control');
+    const [joining, setJoining] = useState(false);
 
-    // 收到邀请后自动加入大厅
+    // 加入大厅的通用逻辑
+    const doJoinLobby = async (lobbyId: string, friendName: string) => {
+        setJoining(true);
+        const toastId = "join";
+        try {
+            toast.loading(`正在加入 ${friendName} 的房间...`, { id: toastId });
+            const result = await invoke<JoinLobbyResult>("join_lobby", { lobbyIdStr: lobbyId });
+            toast.loading("正在建立 P2P 隧道...", { id: toastId });
+            await invoke("connect_to_host", {
+                hostIdStr: result.host_id,
+                localPort: localPort,
+            });
+            toast.success("隧道已打通!", { id: toastId });
+            setCurrentLobbyId(result.lobby_id);
+            await refreshStatus();
+        } catch (e: any) {
+            const msg = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
+            toast.error("加入失败: " + msg, { id: toastId });
+        } finally {
+            setJoining(false);
+        }
+    };
+
+    // Steam 里点了"加入游戏" → 自动加入，不弹窗
     useEffect(() => {
-        if (!pendingInvite || currentLobbyId) return;
+        if (!richPresenceJoin || currentLobbyId) return;
+        const { lobby_id, friend_name } = richPresenceJoin;
+        clearRichPresenceJoin();
+        doJoinLobby(lobby_id, friend_name);
+    }, [richPresenceJoin]);
 
-        const joinInvite = async () => {
-            const toastId = "invite-join";
-            try {
-                toast.loading(`正在加入 ${pendingInvite.friend_name} 的房间...`, { id: toastId });
-                const result = await invoke<JoinLobbyResult>("join_lobby", {
-                    lobbyIdStr: pendingInvite.lobby_id,
-                });
-                toast.loading("正在建立 P2P 隧道...", { id: toastId });
-                await invoke("connect_to_host", {
-                    hostIdStr: result.host_id,
-                    localPort: localPort,
-                });
-                toast.success("已通过邀请加入房间!", { id: toastId });
-                setCurrentLobbyId(result.lobby_id);
-                await refreshStatus();
-            } catch (e: any) {
-                const msg = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
-                toast.error("加入失败: " + msg, { id: toastId });
-            } finally {
-                clearPendingInvite();
-            }
-        };
-        joinInvite();
-    }, [pendingInvite]);
+    // 接受邀请
+    const handleAcceptInvite = () => {
+        if (!pendingInvite) return;
+        const { lobby_id, friend_name } = pendingInvite;
+        clearPendingInvite();
+        doJoinLobby(lobby_id, friend_name);
+    };
+
+    // 拒绝邀请
+    const handleDeclineInvite = () => {
+        clearPendingInvite();
+    };
 
     const handleDisconnect = async () => {
         try {
@@ -67,6 +84,54 @@ function App() {
         <div className="h-screen w-screen flex flex-col font-sans select-none overflow-hidden bg-slate-950 text-slate-200 border border-white/5 shadow-2xl">
             <TitleBar />
             <Toaster position="top-center" />
+
+            {/* 邀请弹窗 */}
+            {pendingInvite && !currentLobbyId && (
+                <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                    <div className="glass-panel rounded-2xl border border-white/10 p-8 max-w-sm w-full mx-4 space-y-6 shadow-2xl animate-in fade-in zoom-in-95 duration-300">
+                        <div className="flex items-center gap-4">
+                            <div className="w-12 h-12 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center">
+                                <Bell size={24} className="text-blue-400" />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-black text-white">收到邀请</h3>
+                                <p className="text-xs text-slate-500 font-bold uppercase tracking-wider">
+                                    Steam P2P Lobby Invitation
+                                </p>
+                            </div>
+                        </div>
+
+                        <div className="bg-slate-900/50 rounded-xl border border-white/5 p-4 space-y-2">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">来自</span>
+                                <span className="text-sm font-bold text-slate-200">{pendingInvite.friend_name}</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-black text-slate-500 uppercase tracking-[0.2em]">大厅</span>
+                                <span className="font-mono text-xs text-slate-400">{pendingInvite.lobby_id}</span>
+                            </div>
+                        </div>
+
+                        <div className="flex gap-3">
+                            <button
+                                onClick={handleDeclineInvite}
+                                className="flex-1 py-3 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 hover:bg-red-500/10 font-bold text-sm flex items-center justify-center gap-2 transition-all"
+                            >
+                                <X size={16} />
+                                拒绝
+                            </button>
+                            <button
+                                onClick={handleAcceptInvite}
+                                disabled={joining}
+                                className="flex-1 py-3 rounded-xl bg-blue-600 text-white hover:bg-blue-500 font-bold text-sm flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg shadow-blue-500/20"
+                            >
+                                <Check size={16} />
+                                {joining ? '加入中...' : '接受'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <header className="h-16 md:h-20 glass-panel border-b border-white/5 z-50 flex items-center justify-between px-4 md:px-8 shrink-0 relative overflow-hidden">
                 <div data-tauri-drag-region className="absolute inset-0 z-0 cursor-default"></div>

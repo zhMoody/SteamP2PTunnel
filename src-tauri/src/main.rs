@@ -14,7 +14,7 @@ use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
 use steamworks::networking_types::{NetConnectionStatusChanged, NetworkingConnectionState};
-use steamworks::{ChatMemberStateChange, GameLobbyJoinRequested, LobbyChatUpdate};
+use steamworks::{ChatMemberStateChange, GameLobbyJoinRequested, GameRichPresenceJoinRequested, LobbyChatUpdate};
 // use steamworks_sys; — now via steamworks::sys with raw-bindings feature
 use sysinfo::{Pid, System};
 use tauri::{AppHandle, Emitter, Manager};
@@ -212,12 +212,34 @@ async fn main() {
         }
         });
 
-    // 接收 Steam 好友邀请（前端通过 friend_id 在已有好友列表中匹配名称）
+    // Steam 好友通过"加入游戏"直接加入（无需弹窗，自动加入）
+    app_state.steam_client.register_callback(move |join: GameRichPresenceJoinRequested| {
+        // connect 字符串即为 lobby ID（由 create_lobby 时 set_rich_presence 写入）
+        let lobby_id_str = join.connect.clone();
+        let friend_id_str = join.friend_steam_id.raw().to_string();
+        log::info!(
+            "🎮 Steam 好友 {} 通过 Rich Presence 加入，大厅={}",
+            friend_id_str,
+            lobby_id_str
+        );
+        if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+            let _ = handle.emit(
+                "rich-presence-join",
+                InviteReceivedPayload {
+                    lobby_id: lobby_id_str,
+                    friend_id: friend_id_str.clone(),
+                    friend_name: friend_id_str,
+                },
+            );
+        }
+    });
+
+    // Steam 大厅邀请（弹出对话框让用户决定）
     app_state.steam_client.register_callback(move |invite: GameLobbyJoinRequested| {
         let lobby_id_str = invite.lobby_steam_id.raw().to_string();
         let friend_id_str = invite.friend_steam_id.raw().to_string();
         log::info!(
-            "📨 收到邀请：大厅={}，好友 SteamId={}",
+            "📨 收到大厅邀请：大厅={}，好友 SteamId={}",
             lobby_id_str,
             friend_id_str
         );
@@ -227,7 +249,7 @@ async fn main() {
                 InviteReceivedPayload {
                     lobby_id: lobby_id_str,
                     friend_id: friend_id_str.clone(),
-                    friend_name: friend_id_str, // 前端根据此 SteamId 匹配好友名
+                    friend_name: friend_id_str,
                 },
             );
         }

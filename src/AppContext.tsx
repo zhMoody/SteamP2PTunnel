@@ -15,7 +15,8 @@ interface AppState {
     networkStatus: NetworkStatus;
     currentLobbyId: string | null;
     localPort: number;
-    pendingInvite: InvitePayload | null;
+    pendingInvite: InvitePayload | null;      // 弹窗确认
+    richPresenceJoin: InvitePayload | null;   // Steam 里点了"加入游戏"，自动加入
 }
 
 interface AppContextType extends AppState {
@@ -23,6 +24,7 @@ interface AppContextType extends AppState {
     setCurrentLobbyId: (id: string | null) => void;
     refreshStatus: () => Promise<void>;
     clearPendingInvite: () => void;
+    clearRichPresenceJoin: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -42,6 +44,7 @@ export const AppProvider = ({children}: { children: ReactNode }) => {
         currentLobbyId: null,
         localPort: parseInt(localStorage.getItem("mcct_last_port") || "25565", 10),
         pendingInvite: null,
+        richPresenceJoin: null,
     });
 
     const refreshStatus = useCallback(async () => {
@@ -61,12 +64,22 @@ export const AppProvider = ({children}: { children: ReactNode }) => {
         setState(prevState => ({...prevState, localPort: port}));
     };
 
+    // 进入/退出大厅时清空邀请状态
     const setCurrentLobbyId = (id: string | null) => {
-        setState(prevState => ({...prevState, currentLobbyId: id, pendingInvite: null}));
+        setState(prevState => ({
+            ...prevState,
+            currentLobbyId: id,
+            pendingInvite: null,
+            richPresenceJoin: null,
+        }));
     };
 
     const clearPendingInvite = () => {
         setState(prevState => ({...prevState, pendingInvite: null}));
+    };
+
+    const clearRichPresenceJoin = () => {
+        setState(prevState => ({...prevState, richPresenceJoin: null}));
     };
 
     // 定时刷新网络状态
@@ -75,12 +88,23 @@ export const AppProvider = ({children}: { children: ReactNode }) => {
         return () => clearInterval(interval);
     }, [refreshStatus]);
 
-    // 监听 Steam 好友邀请
+    // 监听 Steam 大厅邀请（弹窗）
     useEffect(() => {
         const unlisten = listen<InvitePayload>('invite-received', (event) => {
             setState(prevState => ({
                 ...prevState,
                 pendingInvite: event.payload,
+            }));
+        });
+        return () => { unlisten.then(fn => fn()); };
+    }, []);
+
+    // 监听 Steam "加入游戏"（自动加入）
+    useEffect(() => {
+        const unlisten = listen<InvitePayload>('rich-presence-join', (event) => {
+            setState(prevState => ({
+                ...prevState,
+                richPresenceJoin: event.payload,
             }));
         });
         return () => { unlisten.then(fn => fn()); };
@@ -100,6 +124,7 @@ export const AppProvider = ({children}: { children: ReactNode }) => {
         setCurrentLobbyId,
         refreshStatus,
         clearPendingInvite,
+        clearRichPresenceJoin,
     };
     return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
