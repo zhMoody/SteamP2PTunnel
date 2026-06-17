@@ -13,11 +13,9 @@ use std::sync::mpsc;
 use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
-use steamworks::networking_sockets::NetConnection;
-use steamworks::networking_types::{
-    NetConnectionInfo, NetConnectionStatusChanged, NetworkingConnectionState,
-};
-use steamworks_sys;
+use steamworks::networking_types::{NetConnectionStatusChanged, NetworkingConnectionState};
+use steamworks::{ChatMemberStateChange, GameLobbyJoinRequested, LobbyChatUpdate};
+// use steamworks_sys; — now via steamworks::sys with raw-bindings feature
 use sysinfo::{Pid, System};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -28,6 +26,22 @@ static SYS_INFO: LazyLock<Mutex<System>> = LazyLock::new(|| Mutex::new(System::n
 struct LogPayload {
     message: String,
     level: String,
+}
+
+// 前端事件 payload：收到邀请
+#[derive(Serialize, Clone)]
+struct InviteReceivedPayload {
+    lobby_id: String,
+    friend_id: String,
+    friend_name: String,
+}
+
+// 前端事件 payload：大厅成员变更
+#[derive(Serialize, Clone)]
+struct LobbyMemberChangePayload {
+    user_id: String,
+    // "entered" / "left" / "disconnected" / "kicked" / "banned"
+    change: String,
 }
 
 struct FrontendLogger {
@@ -91,17 +105,6 @@ static LOGGER: LazyLock<FrontendLogger> = LazyLock::new(|| FrontendLogger {
     history: Mutex::new(CircularQueue::with_capacity(500)),
 });
 
-#[repr(C)]
-struct NetConnectionStatusChangedHack {
-    pub connection: steamworks_sys::HSteamNetConnection,
-    pub connection_info: NetConnectionInfo,
-    pub old_state: NetworkingConnectionState,
-}
-
-fn is_same_conn(a: &NetConnection, handle: steamworks_sys::HSteamNetConnection) -> bool {
-    steam_utils::get_connection_handle(a) == handle
-}
-
 #[tauri::command]
 async fn open_log_window(handle: tauri::AppHandle) {
     if let Some(win) = handle.get_webview_window("logs") {
@@ -116,7 +119,6 @@ async fn open_log_window(handle: tauri::AppHandle) {
         .inner_size(800.0, 600.0)
         .resizable(true)
         .decorations(false)
-        .transparent(true)
         .build();
     }
 }
@@ -166,24 +168,16 @@ async fn main() {
     // Register the debug callback to get detailed network logs
     steam_utils::register_debug_callback();
 
-    // Initialize Relay Network Access
-    log::info!("初始化 Steam Relay Network Access...");
-    steam_utils::init_relay_network_access();
-
     // Apply Global P2P Configurations to avoid 5008 timeout
     log::info!("设置全局 P2P 配置 (禁用 ICE, 允许任意用户)...");
     steam_utils::set_global_config_value_int32(
-        steamworks_sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable,
+        steamworks::sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable,
         0, // Disable ICE completely
     );
     steam_utils::set_global_config_value_int32(
-        steamworks_sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_IP_AllowWithoutAuth,
+        steamworks::sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_IP_AllowWithoutAuth,
         1, // Allow P2P even without traditional friend auth
     );
-
-    // Initialize Authentication
-    log::info!("初始化 Steam 认证...");
-    steam_utils::init_authentication(&app_state.steam_client);
 
     // Wait a bit more for SDR to initialize before allowing any UI action
     thread::sleep(Duration::from_secs(2));
@@ -194,48 +188,76 @@ async fn main() {
 
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     let connections = app_state.connections.clone();
-    let active_handles = app_state.active_handles.clone();
     let client = app_state.steam_client.clone();
 
     client.register_callback(move |event: NetConnectionStatusChanged| {
-        let event_hack: &NetConnectionStatusChangedHack = unsafe { std::mem::transmute(&event) };
-        let connection_handle = event_hack.connection;
+        let remote_id = event.connection_info.identity_remote()
+            .and_then(|id| id.steam_id());
 
-        match event_hack.connection_info.state() {
+        match event.connection_info.state() {
         Ok(NetworkingConnectionState::Connecting) => {
-            let remote = event_hack.connection_info.identity_remote().unwrap();
-            log::info!("P2P 正在连接: {:?}", remote.steam_id());
+            log::info!("P2P 正在连接: {:?}", remote_id);
         }
         Ok(NetworkingConnectionState::Connected) => {
-            log::info!("P2P 已连接: 句柄={:?}", connection_handle);
-            let mut handles = active_handles.lock();
-            if !handles.contains(&connection_handle) {
-                handles.push(connection_handle);
-            }
+            log::info!("P2P 已连接: SteamId={:?}", remote_id);
         }
         Ok(NetworkingConnectionState::ClosedByPeer)
         | Ok(NetworkingConnectionState::ProblemDetectedLocally) => {
-            let mut conns = connections.lock();
-            let mut handles = active_handles.lock();
-            log::info!(
-                "P2P 连接已关闭/失败: 句柄={:?}",
-                connection_handle
-            );
-            if let Some(pos) = conns
-                .iter()
-                .position(|c| is_same_conn(c, connection_handle))
-            {
-                conns.remove(pos);
-                log::info!("已从活动列表中移除连接。");
-            }
-            if let Some(pos) = handles.iter().position(|&h| h == connection_handle) {
-                handles.remove(pos);
-                log::info!("已从活动句柄中移除。");
+            if let Some(id) = remote_id {
+                log::info!("P2P 连接已关闭: SteamId={:?}", id);
+                connections.lock().remove(&id);
             }
         }
         _ => {}
         }
         });
+
+    // 接收 Steam 好友邀请（前端通过 friend_id 在已有好友列表中匹配名称）
+    app_state.steam_client.register_callback(move |invite: GameLobbyJoinRequested| {
+        let lobby_id_str = invite.lobby_steam_id.raw().to_string();
+        let friend_id_str = invite.friend_steam_id.raw().to_string();
+        log::info!(
+            "📨 收到邀请：大厅={}，好友 SteamId={}",
+            lobby_id_str,
+            friend_id_str
+        );
+        if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+            let _ = handle.emit(
+                "invite-received",
+                InviteReceivedPayload {
+                    lobby_id: lobby_id_str,
+                    friend_id: friend_id_str.clone(),
+                    friend_name: friend_id_str, // 前端根据此 SteamId 匹配好友名
+                },
+            );
+        }
+    });
+
+    // 大厅成员进出通知
+    app_state.steam_client.register_callback(move |update: LobbyChatUpdate| {
+        let change_str = match update.member_state_change {
+            ChatMemberStateChange::Entered => "entered",
+            ChatMemberStateChange::Left => "left",
+            ChatMemberStateChange::Disconnected => "disconnected",
+            ChatMemberStateChange::Kicked => "kicked",
+            ChatMemberStateChange::Banned => "banned",
+        };
+        log::info!(
+            "👥 大厅成员变更: {:?} {} — {}",
+            update.user_changed,
+            change_str,
+            update.lobby.raw()
+        );
+        if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+            let _ = handle.emit(
+                "lobby-member-changed",
+                LobbyMemberChangePayload {
+                    user_id: update.user_changed.raw().to_string(),
+                    change: change_str.to_string(),
+                },
+            );
+        }
+    });
 
         let client_for_loop = app_state.steam_client.clone();
         thread::spawn(move || {
@@ -272,11 +294,8 @@ async fn main() {
         .expect("构建 Tauri 应用时出错");
 
         app.run(|_app_handle, event| match event {
-        tauri::RunEvent::ExitRequested { api, .. } => {
+        tauri::RunEvent::ExitRequested { .. } => {
         log::info!("收到 Tauri 退出请求。正在清理网络任务...");
-        api.prevent_exit();
-        log::info!("应用程序即将退出。");
-        std::process::exit(0);
         }
         _ => {}
         });

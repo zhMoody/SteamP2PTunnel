@@ -7,9 +7,10 @@
 use circular_queue::CircularQueue;
 use parking_lot::Mutex;
 use serde::Serialize;
+use std::collections::HashMap;
 use std::sync::Arc;
 use steamworks::networking_sockets::NetConnection;
-use steamworks::{Client, LobbyId};
+use steamworks::{Client, LobbyId, SteamId};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +33,8 @@ pub struct AppState {
     pub state: Arc<Mutex<TunnelState>>,
     pub local_game_port: Arc<Mutex<u16>>,
     pub cancel_token: Arc<Mutex<CancellationToken>>,
-    pub connections: Arc<Mutex<Vec<NetConnection>>>,
-    pub active_handles: Arc<Mutex<Vec<steamworks_sys::HSteamNetConnection>>>,
+    /// P2P 连接表，以远端 SteamId 为 key
+    pub connections: Arc<Mutex<HashMap<SteamId, NetConnection>>>,
     pub logs: Arc<Mutex<CircularQueue<LogEntry>>>,
 }
 
@@ -42,10 +43,10 @@ impl AppState {
         // CRITICAL: Initialize relay network access early
         eprintln!("[INIT] 🔌 Initializing Steam Relay Network Access...");
         super::steam_utils::init_relay_network_access();
-        
+
         let client = Client::init_app(480)?;
         eprintln!("[INIT] ✅ Steam Client initialized");
-        
+
         // CRITICAL: Initialize authentication for P2P
         eprintln!("[INIT] 🔐 正在初始化 P2P 认证...");
         super::steam_utils::init_authentication(&client);
@@ -55,8 +56,7 @@ impl AppState {
             state: Arc::new(Mutex::new(TunnelState::Idle)),
             local_game_port: Arc::new(Mutex::new(0)),
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
-            connections: Arc::new(Mutex::new(Vec::new())),
-            active_handles: Arc::new(Mutex::new(Vec::new())),
+            connections: Arc::new(Mutex::new(HashMap::new())),
             logs: Arc::new(Mutex::new(CircularQueue::with_capacity(500))),
         })
     }

@@ -2,18 +2,27 @@
 
 import {createContext, ReactNode, useContext, useEffect, useState, useCallback} from 'react';
 import {invoke} from '@tauri-apps/api/core';
+import {listen} from '@tauri-apps/api/event';
 import {NetworkStatus} from './types';
+
+interface InvitePayload {
+    lobby_id: string;
+    friend_id: string;
+    friend_name: string;
+}
 
 interface AppState {
     networkStatus: NetworkStatus;
     currentLobbyId: string | null;
     localPort: number;
+    pendingInvite: InvitePayload | null;
 }
 
 interface AppContextType extends AppState {
     setLocalPort: (port: number) => void;
     setCurrentLobbyId: (id: string | null) => void;
     refreshStatus: () => Promise<void>;
+    clearPendingInvite: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -32,6 +41,7 @@ export const AppProvider = ({children}: { children: ReactNode }) => {
         networkStatus: initialNetworkStatus,
         currentLobbyId: null,
         localPort: parseInt(localStorage.getItem("mcct_last_port") || "25565", 10),
+        pendingInvite: null,
     });
 
     const refreshStatus = useCallback(async () => {
@@ -52,15 +62,45 @@ export const AppProvider = ({children}: { children: ReactNode }) => {
     };
 
     const setCurrentLobbyId = (id: string | null) => {
-        setState(prevState => ({...prevState, currentLobbyId: id}));
+        setState(prevState => ({...prevState, currentLobbyId: id, pendingInvite: null}));
     };
 
+    const clearPendingInvite = () => {
+        setState(prevState => ({...prevState, pendingInvite: null}));
+    };
+
+    // 定时刷新网络状态
     useEffect(() => {
         const interval = setInterval(refreshStatus, 1000);
         return () => clearInterval(interval);
     }, [refreshStatus]);
 
-    const value = {...state, setLocalPort, setCurrentLobbyId, refreshStatus};
+    // 监听 Steam 好友邀请
+    useEffect(() => {
+        const unlisten = listen<InvitePayload>('invite-received', (event) => {
+            setState(prevState => ({
+                ...prevState,
+                pendingInvite: event.payload,
+            }));
+        });
+        return () => { unlisten.then(fn => fn()); };
+    }, []);
+
+    // 监听大厅成员变更
+    useEffect(() => {
+        const unlisten = listen('lobby-member-changed', () => {
+            refreshStatus();
+        });
+        return () => { unlisten.then(fn => fn()); };
+    }, [refreshStatus]);
+
+    const value = {
+        ...state,
+        setLocalPort,
+        setCurrentLobbyId,
+        refreshStatus,
+        clearPendingInvite,
+    };
     return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };
 

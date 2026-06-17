@@ -186,8 +186,7 @@ pub async fn connect_to_host(
     if host_id != my_id {
         net_manager::start_network_client(&state, host_id, local_port).await
     } else {
-        log::info!("Player is the host, no need to connect_to_host.");
-        Ok(())
+        Err(AppError::Network("Cannot connect to yourself. You are the host.".to_string()))
     }
 }
 
@@ -267,8 +266,9 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
         let members = matchmaking.lobby_members(lobby_id);
         let my_id = state.steam_client.user().steam_id();
 
-        // 获取所有活动的真实句柄
-        let active_handles = state.active_handles.lock();
+        // 从 HashMap 中查找每个成员的连接状态
+        let connections = state.connections.lock();
+        let sockets = state.steam_client.networking_sockets();
 
         members
             .into_iter()
@@ -281,23 +281,15 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
                 if member_id == my_id {
                     ping = 0;
                     relay = "本地 (Local)".to_string();
-                } else {
-                    // 遍历所有活动句柄，寻找匹配该成员 SteamID 的连接
-                    for &handle in active_handles.iter() {
-                        if let Some(stats) = steam_utils::get_stats_from_handle(handle) {
-                            // 重新通过底层 API 获取该句柄对应的 SteamID
-                            unsafe {
-                                let sockets_ptr = steamworks_sys::SteamAPI_SteamNetworkingSockets_SteamAPI_v012();
-                                let mut info: steamworks_sys::SteamNetConnectionInfo_t = std::mem::zeroed();
-                                if steamworks_sys::SteamAPI_ISteamNetworkingSockets_GetConnectionInfo(sockets_ptr, handle, &mut info) {
-                                    let remote_id = info.m_identityRemote.__bindgen_anon_1.m_steamID64;
-                                    if remote_id == member_id.raw() {
-                                        ping = stats.ping;
-                                        relay = stats.connection_type;
-                                        break;
-                                    }
-                                }
-                            }
+                } else if let Some(conn) = connections.get(&member_id) {
+                    // 使用官方 API 获取连接实时状态
+                    if let Ok((info, _lanes)) = sockets.get_realtime_connection_status(conn, 0) {
+                        ping = info.ping();
+                        if let Ok(state) = info.connection_state() {
+                            relay = match state {
+                                NetworkingConnectionState::Connected => "P2P (Connected)".to_string(),
+                                _ => format!("{:?}", state),
+                            };
                         }
                     }
                 }
@@ -318,20 +310,26 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
 #[tauri::command]
 pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
     let tunnel_state = *state.state.lock();
-    let client_count = state.connections.lock().len();
+    let connections = state.connections.lock();
+    let client_count = connections.len();
     let is_host = matches!(tunnel_state, TunnelState::Hosting(_));
 
     let mut ping = -1;
     let mut connection_type = "未连接 (Not Connected)".to_string();
     let mut is_connected = false;
 
-    // 从活动句柄中获取第一个有效句柄的状态作为概览
-    let active_handles = state.active_handles.lock();
-    if let Some(&handle) = active_handles.first() {
-        if let Some(stats) = steam_utils::get_stats_from_handle(handle) {
-            ping = stats.ping;
-            connection_type = stats.connection_type;
-            is_connected = stats.state == NetworkingConnectionState::Connected;
+    // 从 HashMap 中获取第一个连接的实时状态作为概览
+    let sockets = state.steam_client.networking_sockets();
+    if let Some((_id, conn)) = connections.iter().next() {
+        if let Ok((info, _lanes)) = sockets.get_realtime_connection_status(conn, 0) {
+            ping = info.ping();
+            if let Ok(state) = info.connection_state() {
+                is_connected = state == NetworkingConnectionState::Connected;
+                connection_type = match state {
+                    NetworkingConnectionState::Connected => "P2P (Connected)".to_string(),
+                    _ => format!("{:?}", state),
+                };
+            }
         }
     }
 

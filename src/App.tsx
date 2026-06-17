@@ -9,13 +9,46 @@ import {MemberList} from "./components/MemberList";
 import {FriendList} from "./components/FriendList";
 import {TitleBar} from "./components/TitleBar";
 import {invoke} from "@tauri-apps/api/core";
-import {useState} from "react";
+import {useState, useEffect} from "react";
+import {JoinLobbyResult} from "./types";
 
 function App() {
-    const {networkStatus, localPort, setCurrentLobbyId, currentLobbyId} = useApp();
+    const {
+        networkStatus, localPort, setCurrentLobbyId, currentLobbyId,
+        pendingInvite, clearPendingInvite, refreshStatus
+    } = useApp();
     const {isConnected, statusMessage} = networkStatus;
-    
+
     const [expandedPanel, setExpandedPanel] = useState<'control' | 'friends'>('control');
+
+    // 收到邀请后自动加入大厅
+    useEffect(() => {
+        if (!pendingInvite || currentLobbyId) return;
+
+        const joinInvite = async () => {
+            const toastId = "invite-join";
+            try {
+                toast.loading(`正在加入 ${pendingInvite.friend_name} 的房间...`, { id: toastId });
+                const result = await invoke<JoinLobbyResult>("join_lobby", {
+                    lobbyIdStr: pendingInvite.lobby_id,
+                });
+                toast.loading("正在建立 P2P 隧道...", { id: toastId });
+                await invoke("connect_to_host", {
+                    hostIdStr: result.host_id,
+                    localPort: localPort,
+                });
+                toast.success("已通过邀请加入房间!", { id: toastId });
+                setCurrentLobbyId(result.lobby_id);
+                await refreshStatus();
+            } catch (e: any) {
+                const msg = typeof e === 'string' ? e : (e.message || JSON.stringify(e));
+                toast.error("加入失败: " + msg, { id: toastId });
+            } finally {
+                clearPendingInvite();
+            }
+        };
+        joinInvite();
+    }, [pendingInvite]);
 
     const handleDisconnect = async () => {
         try {
