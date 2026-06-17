@@ -1,6 +1,6 @@
 [package]
 name = "steam_p2p_tunnel"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Steam P2P tunneling tool for LAN games"
 authors = ["Moody"]
 edition = "2021"
