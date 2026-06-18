@@ -1,21 +1,7 @@
 use steamworks::networking_types::NetworkingConnectionState;
 use steamworks::Client;
 
-// === 底层 sys 调用（官方未封装）===
-
-pub fn init_relay_network_access() {
-    unsafe {
-        let utils_ptr = steamworks::sys::SteamAPI_SteamNetworkingUtils_SteamAPI_v004();
-        if utils_ptr.is_null() {
-            eprintln!("❌ Failed to get SteamNetworkingUtils pointer");
-            return;
-        }
-
-        let result =
-            steamworks::sys::SteamAPI_ISteamNetworkingUtils_InitRelayNetworkAccess(utils_ptr);
-        eprintln!("🔌 InitRelayNetworkAccess called - Result: {:?}", result);
-    }
-}
+// === 底层 sys 调用（steamworks-rs 未封装的安全 API）===
 
 unsafe extern "C" fn steam_networking_debug_output(
     n_type: steamworks::sys::ESteamNetworkingSocketsDebugOutputType,
@@ -60,35 +46,6 @@ pub fn register_debug_callback() {
         } else {
             log::error!("❌ 注册调试回调失败: Utils 指针为空");
         }
-    }
-}
-
-/// 全局配置：禁用 ICE、允许无需认证的 P2P 连接
-pub fn set_global_config_value_int32(
-    config: steamworks::sys::ESteamNetworkingConfigValue,
-    value: i32,
-) -> bool {
-    unsafe {
-        let utils_ptr = steamworks::sys::SteamAPI_SteamNetworkingUtils_SteamAPI_v004();
-        if utils_ptr.is_null() {
-            return false;
-        }
-
-        steamworks::sys::SteamAPI_ISteamNetworkingUtils_SetConfigValue(
-            utils_ptr,
-            config,
-            steamworks::sys::ESteamNetworkingConfigScope::k_ESteamNetworkingConfig_Global,
-            0,
-            steamworks::sys::ESteamNetworkingConfigDataType::k_ESteamNetworkingConfig_Int32,
-            &value as *const i32 as *const _,
-        )
-    }
-}
-
-pub fn invite_user_to_lobby(lobby_id: u64, friend_id: u64) -> bool {
-    unsafe {
-        let mm_ptr = steamworks::sys::SteamAPI_SteamMatchmaking_v009();
-        steamworks::sys::SteamAPI_ISteamMatchmaking_InviteUserToLobby(mm_ptr, lobby_id, friend_id)
     }
 }
 

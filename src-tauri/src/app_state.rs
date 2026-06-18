@@ -40,10 +40,6 @@ pub struct AppState {
 
 impl AppState {
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        // CRITICAL: Initialize relay network access early
-        eprintln!("[INIT] 🔌 Initializing Steam Relay Network Access...");
-        super::steam_utils::init_relay_network_access();
-
         let client = Client::init_app(480)?;
         eprintln!("[INIT] ✅ Steam Client initialized");
 

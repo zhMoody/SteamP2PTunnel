@@ -1,7 +1,6 @@
 use crate::app_state::{AppState, TunnelState};
 use crate::error::{AppError, AppResult};
 use crate::net_manager;
-use crate::steam_utils;
 use serde::Serialize;
 use steamworks::networking_types::NetworkingConnectionState;
 use steamworks::{FriendFlags, LobbyId, LobbyType, SteamError, SteamId};
@@ -231,23 +230,29 @@ pub fn send_invite(state: State<'_, AppState>, friend_id_str: String) -> AppResu
     let friend_id_u64 = friend_id_str
         .parse::<u64>()
         .map_err(|_| AppError::Parse("Invalid Friend ID".to_string()))?;
+    let friend_id = SteamId::from_raw(friend_id_u64);
     let tunnel_state = state.state.lock();
 
-    let lobby_id_opt = match *tunnel_state {
+    let lobby_id = match *tunnel_state {
         TunnelState::Hosting(id) => Some(id),
         TunnelState::Joined(id) => Some(id),
         TunnelState::Idle => None,
     };
 
-    if let Some(lobby_id) = lobby_id_opt {
-        let success = steam_utils::invite_user_to_lobby(lobby_id.raw(), friend_id_u64);
-        if success {
+    match lobby_id {
+        Some(lobby_id) => {
+            let friends = state.steam_client.friends();
+            let friend = friends.get_friend(friend_id);
+            // connect 字符串即 lobby ID（已在 create_lobby 时通过 Rich Presence 设置）
+            friend.invite_user_to_game(&lobby_id.raw().to_string());
+            log::info!(
+                "📨 已向好友 {} 发送游戏邀请（大厅={}）",
+                friend.name(),
+                lobby_id.raw()
+            );
             Ok(())
-        } else {
-            Err(AppError::Lobby("Failed to send invite".to_string()))
         }
-    } else {
-        Err(AppError::Lobby("Not in a lobby".to_string()))
+        None => Err(AppError::Lobby("Not in a lobby".to_string())),
     }
 }
 
@@ -269,11 +274,13 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
         // 从 HashMap 中查找每个成员的连接状态
         let connections = state.connections.lock();
         let sockets = state.steam_client.networking_sockets();
+        let conn_count = connections.len();
 
         members
             .into_iter()
             .map(|member_id| {
                 let friend_obj = friends.get_friend(member_id);
+                let member_id_str = member_id.raw().to_string();
 
                 let mut ping = -1;
                 let mut relay = "Unknown".to_string();
@@ -282,20 +289,54 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
                     ping = 0;
                     relay = "本地 (Local)".to_string();
                 } else if let Some(conn) = connections.get(&member_id) {
-                    // 使用官方 API 获取连接实时状态
-                    if let Ok((info, _lanes)) = sockets.get_realtime_connection_status(conn, 0) {
-                        ping = info.ping();
-                        if let Ok(state) = info.connection_state() {
-                            relay = match state {
-                                NetworkingConnectionState::Connected => "P2P (Connected)".to_string(),
-                                _ => format!("{:?}", state),
+                    log::debug!(
+                        "🔍 查询成员 {} 的连接状态 ({} 条活动连接中)",
+                        friend_obj.name(),
+                        conn_count
+                    );
+                    match sockets.get_realtime_connection_status(conn, 0) {
+                        Ok((info, _lanes)) => {
+                            ping = info.ping();
+                            let state_result = info.connection_state();
+                            relay = match state_result {
+                                Ok(state) => {
+                                    log::debug!(
+                                        "✅ 成员 {} 连接状态: {:?}, ping={}ms",
+                                        friend_obj.name(),
+                                        state,
+                                        ping
+                                    );
+                                    match state {
+                                        NetworkingConnectionState::Connected => "P2P (Connected)".to_string(),
+                                        _ => format!("{:?}", state),
+                                    }
+                                }
+                                Err(_) => {
+                                    log::warn!("⚠️ 成员 {} 无法获取连接状态枚举值", friend_obj.name());
+                                    format!("ping={}", ping)
+                                }
                             };
                         }
+                        Err(e) => {
+                            log::warn!(
+                                "⚠️ 成员 {} 的 get_realtime_connection_status 失败: {:?}",
+                                friend_obj.name(),
+                                e
+                            );
+                            relay = "Error".to_string();
+                        }
                     }
+                } else {
+                    log::debug!(
+                        "📌 成员 {} (id={}) 不在活动连接表中 (my_id={})",
+                        friend_obj.name(),
+                        member_id_str,
+                        my_id.raw()
+                    );
                 }
 
                 MemberInfo {
-                    id: member_id.raw().to_string(),
+                    id: member_id_str,
                     name: friend_obj.name(),
                     ping,
                     relay,

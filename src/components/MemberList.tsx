@@ -1,7 +1,7 @@
 import {useEffect, useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
 import {MemberInfo} from "../types";
-import {User, Shield} from "lucide-react";
+import {User, Shield, Network} from "lucide-react";
 
 export function MemberList() {
     const [members, setMembers] = useState<MemberInfo[]>([]);
@@ -29,8 +29,8 @@ export function MemberList() {
                     <tr className="border-b border-white/5 text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold">
                         <th className="px-6 py-4">成员名称</th>
                         <th className="px-6 py-4">身份 / 权限</th>
-                        {/* <th className="p-4 font-medium">状态</th> */}
-                        {/* <th className="p-4 font-medium">连接类型</th> */}
+                        <th className="px-6 py-4">延迟</th>
+                        <th className="px-6 py-4">连接类型</th>
                     </tr>
                     </thead>
                     <tbody className="divide-y divide-white/5">
@@ -56,25 +56,25 @@ export function MemberList() {
                                     </span>
                                 </div>
                             </td>
-                            {/* <td className="p-4">
+                            <td className="px-6 py-4">
                                 <div className="flex items-center gap-2">
                                     <Network size={14}
-                                             className={member.ping < 100 ? "text-green-500" : "text-yellow-500"}/>
-                                    <span className="font-mono text-sm text-slate-400">
-                        {member.ping === 0 ? "本机" : `${member.ping}ms`}
-                      </span>
+                                             className={member.ping < 0 ? "text-slate-600" : member.ping < 100 ? "text-emerald-500" : "text-amber-500"}/>
+                                    <span className={`font-mono text-sm ${member.ping < 0 ? "text-slate-600" : member.ping < 100 ? "text-emerald-400" : "text-amber-400"}`}>
+                                        {member.ping < 0 ? "-- ms" : member.ping === 0 ? "本机" : `${member.ping} ms`}
+                                    </span>
                                 </div>
                             </td>
-                            <td className="p-4">
-                    <span className="text-xs px-2 py-1 rounded bg-slate-800 text-slate-400 border border-slate-700">
-                      {member.relay}
-                    </span>
-                            </td> */}
+                            <td className="px-6 py-4">
+                                <span className="text-xs px-2 py-1 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                                    {member.relay}
+                                </span>
+                            </td>
                         </tr>
                     ))}
                     {members.length === 0 && (
                         <tr>
-                            <td colSpan={2} className="p-20 text-center">
+                            <td colSpan={4} className="p-20 text-center">
                                 <div className="flex flex-col items-center gap-3 text-slate-600">
                                     <div className="w-12 h-12 rounded-full border-2 border-dashed border-slate-800 flex items-center justify-center animate-spin-slow">
                                         <User size={24} />

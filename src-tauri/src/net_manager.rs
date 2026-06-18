@@ -101,6 +101,7 @@ pub async fn start_network_client(
 
     let p2p_options = vec![
         NetworkingConfigEntry::new_int32(NetworkingConfigValue::P2PTransportICEEnable, 0),
+        NetworkingConfigEntry::new_int32(NetworkingConfigValue::IPAllowWithoutAuth, 1),
         NetworkingConfigEntry::new_int32(NetworkingConfigValue::TimeoutInitial, 120000),
         NetworkingConfigEntry::new_int32(NetworkingConfigValue::TimeoutConnected, 120000),
     ];
@@ -178,6 +179,11 @@ pub async fn start_network_client(
 
             // 将连接存入 HashMap，以远端 SteamId 为 key
             state.connections.lock().insert(host_id, conn);
+            log::info!(
+                "📝 客户端连接已存入表: host_id={}, 当前连接数={}",
+                host_id.raw(),
+                state.connections.lock().len()
+            );
 
             let state_clone = state.clone();
             let token_clone = session_token.clone();
@@ -213,6 +219,7 @@ pub fn start_network_host(state: &AppState) -> AppResult<()> {
     let networking = state.steam_client.networking_sockets();
 
     let host_options = vec![
+        NetworkingConfigEntry::new_int32(NetworkingConfigValue::IPAllowWithoutAuth, 1),
         NetworkingConfigEntry::new_int32(NetworkingConfigValue::TimeoutInitial, 60000),
     ];
 
@@ -267,15 +274,29 @@ async fn host_loop(state: AppState, listen_socket: ListenSocket, session_token: 
                     let sockets = state.steam_client.networking_sockets();
                     if let Ok(info) = sockets.get_connection_info(&conn) {
                         if let Some(remote_id) = info.identity_remote().and_then(|id| id.steam_id()) {
-                            state.connections.lock().insert(remote_id, conn);
+                            let prev = state.connections.lock().insert(remote_id, conn);
+                            log::info!(
+                                "📝 连接已存入表: remote_id={}, 是否覆盖旧连接={}",
+                                remote_id.raw(),
+                                prev.is_some()
+                            );
+                        } else {
+                            log::warn!("⚠️ Connected 事件中无法解析远端 SteamId");
                         }
+                    } else {
+                        log::error!("❌ 无法获取已连接的对端信息");
                     }
                 }
                 ListenSocketEvent::Disconnected(disconnected) => {
                     if let Some(remote_id) = disconnected.remote().steam_id() {
                         log::warn!("⚠️ P2P 客户端已断开: {:?}", remote_id);
-                        state.connections.lock().remove(&remote_id);
-                        log::info!("✅ 已从活动列表中清理断开的连接: {:?}", remote_id);
+                        let was_removed = state.connections.lock().remove(&remote_id).is_some();
+                        log::info!(
+                            "✅ 已从活动列表中清理: SteamId={}, 实际移除={}, 剩余连接数={}",
+                            remote_id.raw(),
+                            was_removed,
+                            state.connections.lock().len()
+                        );
                     }
                 }
             }
@@ -303,7 +324,7 @@ async fn host_loop(state: AppState, listen_socket: ListenSocket, session_token: 
                         match conn.receive_messages(100) {
                             Ok(messages) => {
                                 if !messages.is_empty() {
-                                    log::debug!("主机收到 {} 条 P2P 消息（来自 {:?}）", messages.len(), remote_id);
+                                    log::debug!("📥 主机收到 {} 条 P2P 消息（来自 SteamId={}）", messages.len(), remote_id.raw());
                                 }
                                 for msg in messages {
                                     if let (Some(packet), Some(info_remote_id)) = (
@@ -333,11 +354,17 @@ async fn host_loop(state: AppState, listen_socket: ListenSocket, session_token: 
                                     }
                                 }
                             },
-                            Err(_) => { dead_ids.push(*remote_id); }
+                            Err(_) => {
+                                log::warn!("⚠️ 主机 receive_messages 失败: SteamId={}, 标记为 dead", remote_id.raw());
+                                dead_ids.push(*remote_id);
+                            }
                         }
                     }
                 }
                 // 清理已断开的连接
+                if !dead_ids.is_empty() {
+                    log::info!("🧹 清理 {} 个已断开的连接", dead_ids.len());
+                }
                 for dead_id in &dead_ids {
                     state.connections.lock().remove(dead_id);
                 }
@@ -518,28 +545,34 @@ async fn client_loop(state: AppState, session_token: CancellationToken) {
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {
                 let mut conns = state.connections.lock();
+                let conn_count = conns.len();
                 if let Some(conn) = conns.values_mut().next() {
-                    if let Ok(messages) = conn.receive_messages(100) {
-                        if !messages.is_empty() {
-                            log::debug!("客户端收到 {} 条 P2P 消息", messages.len());
-                        }
-                        for msg in messages {
-                            if let Some(packet) = TunnelPacket::from_bytes(msg.data()) {
-                              log::debug!("客户端 P2P 包: 客户端 ID={}, 类型={}, 大小={} 字节", packet.client_id, packet.msg_type, packet.payload.len());
-                              let mut map = socket_map.lock();
-                              if packet.msg_type == 1 {
-                                  log::info!("📨 来自 {} 的断开连接", packet.client_id);
-                                  map.remove(&packet.client_id);
-                                  continue;
-                              }
-                              if let Some(sender) = map.get(&packet.client_id) {
-                                  if sender.send(packet.payload).is_err() {
-                                      log::warn!("⚠️ 无法发送数据到套接字: {}", packet.client_id);
-                                  }
-                              } else if packet.client_id != "INIT" {
-                                  log::warn!("⚠️ 收到未知客户端的包: {}", packet.client_id);
-                              }
+                    match conn.receive_messages(100) {
+                        Ok(messages) => {
+                            if !messages.is_empty() {
+                                log::debug!("📥 客户端收到 {} 条 P2P 消息 (活动连接数={})", messages.len(), conn_count);
                             }
+                            for msg in messages {
+                                if let Some(packet) = TunnelPacket::from_bytes(msg.data()) {
+                                  log::debug!("客户端 P2P 包: 客户端 ID={}, 类型={}, 大小={} 字节", packet.client_id, packet.msg_type, packet.payload.len());
+                                  let mut map = socket_map.lock();
+                                  if packet.msg_type == 1 {
+                                      log::info!("📨 来自 {} 的断开连接", packet.client_id);
+                                      map.remove(&packet.client_id);
+                                      continue;
+                                  }
+                                  if let Some(sender) = map.get(&packet.client_id) {
+                                      if sender.send(packet.payload).is_err() {
+                                          log::warn!("⚠️ 无法发送数据到套接字: {}", packet.client_id);
+                                      }
+                                  } else if packet.client_id != "INIT" {
+                                      log::warn!("⚠️ 收到未知客户端的包: {}", packet.client_id);
+                                  }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("⚠️ 客户端 receive_messages 失败: {:?}", e);
                         }
                     }
                 }
