@@ -28,7 +28,6 @@ export function TrayMenuView() {
 	};
 
 	const quit = async () => {
-		await getCurrentWindow().close();
 		await invoke("quit_app", {}).catch(() => {});
 	};
 

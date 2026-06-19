@@ -603,15 +603,16 @@ async fn main() {
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用时出错");
 
-    app.run(|_app_handle, event| match event {
+    let app_state_for_cleanup = app_state.clone();
+    let shutdown_tx_for_cleanup = std::sync::Mutex::new(Some(shutdown_tx.clone()));
+
+    app.run(move |_app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } => {
-            log::info!("收到 Tauri 退出请求。正在清理网络任务...");
+            log::info!("收到退出请求。正在清理网络任务...");
+            net_manager::stop_network(&app_state_for_cleanup);
+            drop(shutdown_tx_for_cleanup.lock().unwrap().take());
+            log::info!("清理完成，应用即将退出。");
         }
         _ => {}
     });
-
-    log::info!("Tauri 应用程序已退出。正在清理后台任务...");
-    net_manager::stop_network(&app_state);
-    drop(shutdown_tx);
-    log::info!("清理完成。进程现在应该正常终止。");
 }
