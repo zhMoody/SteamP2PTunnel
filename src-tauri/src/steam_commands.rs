@@ -4,7 +4,7 @@ use crate::net_manager;
 use serde::Serialize;
 use steamworks::networking_types::NetworkingConnectionState;
 use steamworks::{FriendFlags, LobbyId, LobbyType, SteamError, SteamId};
-use tauri::State;
+use tauri::{Manager, State};
 use tokio::sync::oneshot;
 
 #[derive(Serialize, Clone)]
@@ -464,4 +464,20 @@ pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
 #[tauri::command]
 pub fn get_local_user_id(state: State<'_, AppState>) -> String {
     state.steam_client.user().steam_id().raw().to_string()
+}
+
+/// 在托盘弹出窗口中使用：显示主窗口
+#[tauri::command]
+pub fn show_main_window(app_handle: tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.center();
+    }
+}
+
+/// 在托盘弹出窗口中使用：关闭主窗口（完全退出）
+#[tauri::command]
+pub fn quit_app(app_handle: tauri::AppHandle) {
+    app_handle.exit(0);
 }

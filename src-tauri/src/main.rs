@@ -21,7 +21,6 @@ use steamworks::{
 };
 // use steamworks_sys; — now via steamworks::sys with raw-bindings feature
 use sysinfo::{Pid, System};
-use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -512,41 +511,66 @@ async fn main() {
             *LOGGER.app_handle.lock() = Some(app.handle().clone());
             drain_pending_events();
 
-            // 系统托盘 - 原生菜单，系统自动定位
-            let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
-
+            // 系统托盘 - 右键传坐标，前端自定义菜单
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Steam P2P Tunnel")
-                .menu(&menu)
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.center();
-                            let _ = window.show();
-                            let _ = window.set_focus();
-                        }
-                    }
-                    "quit" => {
-                        app.exit(0);
-                    }
-                    _ => {}
-                })
                 .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        let app = tray.app_handle();
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.center();
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                    let app = tray.app_handle();
+                    match event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
+                        TrayIconEvent::Click {
+                            button: MouseButton::Right,
+                            button_state: MouseButtonState::Up,
+                            position,
+                            ..
+                        } => {
+                            // 在托盘图标旁创建独立弹出窗口，自动判断位置
+                            let app_handle = app.clone();
+                            let popup_w = 220.0;
+                            let popup_h = 360.0;
+                            let gap = 8.0;
+                            // 如果图标在屏幕下半部分 → 向上弹出，否则向下
+                            let y = if position.y > 600.0 {
+                                (position.y - popup_h - gap).max(0.0)
+                            } else {
+                                position.y + gap
+                            };
+                            let x = (position.x - popup_w / 2.0).max(8.0).min(position.x + 8.0);
+                            if let Ok(window) = tauri::WebviewWindowBuilder::new(
+                                &app_handle,
+                                "tray-popup",
+                                tauri::WebviewUrl::App("index.html?view=tray-menu".into()),
+                            )
+                            .title("")
+                            .inner_size(popup_w, popup_h)
+                            .position(x, y)
+                            .decorations(false)
+                            .always_on_top(true)
+                            .skip_taskbar(true)
+                            .shadow(false)
+                            .transparent(true)
+                            .build()
+                            {
+                                let _ = window.set_focus();
+                                let win2 = window.clone();
+                                window.on_window_event(move |event| {
+                                    if let tauri::WindowEvent::Focused(false) = event {
+                                        let _ = win2.close();
+                                    }
+                                });
+                            }
+                        }
+                        _ => {}
                     }
                 })
                 .build(app)?;
@@ -568,6 +592,8 @@ async fn main() {
             steam_commands::get_network_status,
             steam_commands::resolve_game_name,
             steam_commands::get_local_user_id,
+            steam_commands::show_main_window,
+            steam_commands::quit_app,
             chat::send_chat_message,
             chat::get_chat_history,
             open_log_window,

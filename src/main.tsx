@@ -4,17 +4,20 @@ import App from "./App";
 import "./App.css";
 import {AppProvider} from "./AppContext";
 import {LogPanel} from "./components/LogPanel";
+import {TrayMenuView} from "./components/TrayMenuView";
 
 const search = window.location.search;
 const params = new URLSearchParams(search);
-const isLogView = params.get("view") === "logs";
+const view = params.get("view");
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
 	<React.StrictMode>
-		{isLogView ? (
+		{view === "logs" ? (
 			<div className="h-screen w-screen bg-background">
 				<LogPanel isOpen={true} onClose={() => window.close()} />
 			</div>
+		) : view === "tray-menu" ? (
+			<TrayMenuView />
 		) : (
 			<AppProvider>
 				<App />
