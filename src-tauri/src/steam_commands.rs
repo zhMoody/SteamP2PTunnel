@@ -11,6 +11,10 @@ use tokio::sync::oneshot;
 pub struct FriendInfo {
     pub id: String,
     pub name: String,
+    pub state: String,      // "在线", "离开", "忙碌", "离线" 等
+    pub game_id: u32,       // 正在玩的游戏 AppId，0=没在玩，480=本应用
+    pub state_priority: u8, // 0=在线/游戏中, 1=离开/交易中, 2=忙碌, 3=隐身, 4=离线
+    pub in_this_game: bool, // 是否也在玩本应用 (AppId 480)
 }
 
 #[derive(Serialize, Clone)]
@@ -54,12 +58,54 @@ pub struct MemberInfo {
 pub fn get_friends(state: State<'_, AppState>) -> Vec<FriendInfo> {
     let friends = state.steam_client.friends();
     let list = friends.get_friends(FriendFlags::IMMEDIATE);
-    list.into_iter()
-        .map(|f| FriendInfo {
-            id: f.id().raw().to_string(),
-            name: f.name(),
+    let mut result: Vec<FriendInfo> = list
+        .into_iter()
+        .map(|f| {
+            let (state_str, priority) = match f.state() {
+                steamworks::FriendState::Online => ("在线", 0u8),
+                steamworks::FriendState::LookingToPlay => ("游戏中", 0u8),
+                steamworks::FriendState::LookingToTrade => ("交易中", 1u8),
+                steamworks::FriendState::Away => ("离开", 1u8),
+                steamworks::FriendState::Snooze => ("离开", 1u8),
+                steamworks::FriendState::Busy => ("忙碌", 2u8),
+                steamworks::FriendState::Invisible => ("隐身", 3u8),
+                steamworks::FriendState::Offline => ("离线", 4u8),
+            };
+            let game_id = match f.game_played() {
+                Some(g) => g.game.app_id().0,
+                None => 0,
+            };
+            let in_this_game = game_id == 480;
+
+            FriendInfo {
+                id: f.id().raw().to_string(),
+                name: f.name(),
+                state: state_str.to_string(),
+                game_id,
+                state_priority: priority,
+                in_this_game,
+            }
         })
-        .collect()
+        .collect();
+    result.sort_by_key(|f| f.state_priority);
+    result
+}
+
+/// 后端代理 Steam API，避免前端 CORS 问题
+#[tauri::command]
+pub async fn resolve_game_name(app_id: u32) -> Option<String> {
+    let url = format!(
+        "https://store.steampowered.com/api/appdetails?appids={}&l=schinese",
+        app_id
+    );
+    if let Ok(resp) = reqwest::get(&url).await {
+        if let Ok(json) = resp.json::<serde_json::Value>().await {
+            return json[&app_id.to_string()]["data"]["name"]
+                .as_str()
+                .map(|s| s.to_string());
+        }
+    }
+    None
 }
 
 #[tauri::command]

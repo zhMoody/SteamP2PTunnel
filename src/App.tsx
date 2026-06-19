@@ -216,6 +216,10 @@ function App() {
 
 			{/* Main Content - Centered Card */}
 			<main className="flex-1 flex items-center justify-center p-4 md:p-8 overflow-hidden relative">
+				{/* 柔和背景光晕 */}
+				<div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[500px] h-[300px] rounded-full bg-primary/5 blur-[100px] pointer-events-none" />
+				<div className="absolute bottom-1/4 right-1/4 w-[250px] h-[250px] rounded-full bg-primary/[0.03] blur-[80px] pointer-events-none" />
+
 				<div className="w-full max-w-md">
 					{!isInLobby ? (
 						<ConnectionPanel />
@@ -247,7 +251,7 @@ function App() {
 						className="fixed inset-0 bg-background/60 backdrop-blur-sm z-[150]"
 						onClick={() => setShowMembers(false)}
 					/>
-					<div className="fixed bottom-0 left-0 right-0 md:top-0 md:right-0 md:left-auto md:h-full md:w-[380px] max-h-[70vh] md:max-h-none bg-card border-t md:border-t-0 md:border-l border-border rounded-t-3xl md:rounded-none shadow-2xl z-[160] p-6 flex flex-col">
+					<div className="fixed bottom-0 left-0 right-0 md:top-0 md:right-0 md:left-auto md:h-full md:w-[480px] max-h-[70vh] md:max-h-none bg-card border-t md:border-t-0 md:border-l border-border rounded-t-3xl md:rounded-none shadow-2xl z-[160] p-6 flex flex-col">
 						<div className="flex items-center justify-between mb-5">
 							<div className="flex items-center gap-2">
 								<Users className="w-5 h-5 text-primary" />

@@ -54,6 +54,7 @@ struct LobbyMemberChangePayload {
 struct LobbyInvite {
     inviter: SteamId,
     lobby: LobbyId,
+    #[allow(dead_code)]
     game_id: u64,
 }
 
@@ -489,6 +490,7 @@ async fn main() {
             steam_commands::send_invite,
             steam_commands::get_lobby_members,
             steam_commands::get_network_status,
+            steam_commands::resolve_game_name,
             open_log_window,
             get_log_history,
             get_memory_usage

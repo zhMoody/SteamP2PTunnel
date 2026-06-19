@@ -43,7 +43,7 @@ export function LobbyPanel({onDisconnect}: Props) {
 			</div>
 
 			{/* Tunnel endpoint */}
-			<div className="p-5 rounded-2xl bg-muted/50 border border-border space-y-3">
+			<div className="p-5 rounded-2xl bg-muted/30 border border-border space-y-3">
 				<div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wider font-bold">
 					<Terminal className="w-4 h-4" />
 					本地隧道终点
@@ -59,7 +59,7 @@ export function LobbyPanel({onDisconnect}: Props) {
 			</div>
 
 			{/* Lobby ID */}
-			<div className="p-5 rounded-2xl bg-muted/50 border border-border space-y-3">
+			<div className="p-5 rounded-2xl bg-muted/30 border border-border space-y-3">
 				<div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wider font-bold">
 					<Shield className="w-4 h-4" />
 					房间凭证
