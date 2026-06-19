@@ -3,22 +3,25 @@
 use circular_queue::CircularQueue;
 use log::{Level, LevelFilter, Metadata, Record};
 use mcct_lib::{
-    app_state::{AppState, LogEntry},
-    net_manager, steam_commands, steam_utils,
+    app_state::{AppState, ChatMessage, LogEntry},
+    chat, net_manager, steam_commands, steam_utils,
 };
 use native_dialog::{MessageDialog, MessageType};
 use parking_lot::Mutex;
 use serde::Serialize;
+use serde_json;
 use std::sync::mpsc;
 use std::sync::LazyLock;
 use std::thread;
 use std::time::Duration;
-use steamworks::networking_sockets::NetConnection;
-use steamworks::networking_types::{
-    NetConnectionInfo, NetConnectionStatusChanged, NetworkingConnectionState,
+use steamworks::networking_types::{NetConnectionStatusChanged, NetworkingConnectionState};
+use steamworks::{
+    Callback, ChatMemberStateChange, GameLobbyJoinRequested, GameRichPresenceJoinRequested,
+    LobbyChatMsg, LobbyChatUpdate, LobbyCreated, LobbyEnter, LobbyId, SteamId,
 };
-use steamworks_sys;
+// use steamworks_sys; — now via steamworks::sys with raw-bindings feature
 use sysinfo::{Pid, System};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
 
 // --- 全局系统信息实例 ---
@@ -28,6 +31,46 @@ static SYS_INFO: LazyLock<Mutex<System>> = LazyLock::new(|| Mutex::new(System::n
 struct LogPayload {
     message: String,
     level: String,
+}
+
+// 前端事件 payload：收到邀请
+#[derive(Serialize, Clone)]
+struct InviteReceivedPayload {
+    lobby_id: String,
+    friend_id: String,
+    friend_name: String,
+}
+
+// 前端事件 payload：大厅成员变更
+#[derive(Serialize, Clone)]
+struct LobbyMemberChangePayload {
+    user_id: String,
+    // "entered" / "left" / "disconnected" / "kicked" / "banned"
+    change: String,
+}
+
+// LobbyInvite 回调 — InviteUserToLobby 触发，无需用户操作
+// steamworks-rs 未封装此回调，手动实现 Callback trait
+#[derive(Clone, Debug)]
+struct LobbyInvite {
+    inviter: SteamId,
+    lobby: LobbyId,
+    #[allow(dead_code)]
+    game_id: u64,
+}
+
+unsafe impl Callback for LobbyInvite {
+    const ID: i32 = steamworks::sys::LobbyInvite_t_k_iCallback as i32;
+    unsafe fn from_raw(raw: *mut std::ffi::c_void) -> Self {
+        let invite = raw
+            .cast::<steamworks::sys::LobbyInvite_t>()
+            .read_unaligned();
+        LobbyInvite {
+            inviter: SteamId::from_raw(invite.m_ulSteamIDUser),
+            lobby: LobbyId::from_raw(invite.m_ulSteamIDLobby),
+            game_id: invite.m_ulGameID,
+        }
+    }
 }
 
 struct FrontendLogger {
@@ -91,15 +134,24 @@ static LOGGER: LazyLock<FrontendLogger> = LazyLock::new(|| FrontendLogger {
     history: Mutex::new(CircularQueue::with_capacity(500)),
 });
 
-#[repr(C)]
-struct NetConnectionStatusChangedHack {
-    pub connection: steamworks_sys::HSteamNetConnection,
-    pub connection_info: NetConnectionInfo,
-    pub old_state: NetworkingConnectionState,
-}
+/// 在 AppHandle 就绪前暂存的事件队列
+static PENDING_INVITE_EVENTS: LazyLock<Mutex<Vec<(String, String)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
-fn is_same_conn(a: &NetConnection, handle: steamworks_sys::HSteamNetConnection) -> bool {
-    steam_utils::get_connection_handle(a) == handle
+fn drain_pending_events() {
+    let pending: Vec<_> = PENDING_INVITE_EVENTS.lock().drain(..).collect();
+    if pending.is_empty() {
+        return;
+    }
+    log::info!("📤 正在发送 {} 个暂存事件", pending.len());
+    if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+        for (event_name, payload_json) in pending {
+            let _ = handle.emit(
+                &event_name,
+                serde_json::from_str::<serde_json::Value>(&payload_json).unwrap(),
+            );
+        }
+    }
 }
 
 #[tauri::command]
@@ -114,9 +166,8 @@ async fn open_log_window(handle: tauri::AppHandle) {
         )
         .title("系統日誌 (System Logs)")
         .inner_size(800.0, 600.0)
-        .resizable(true)
+        .resizable(false)
         .decorations(false)
-        .transparent(true)
         .build();
     }
 }
@@ -163,125 +214,405 @@ async fn main() {
         .expect("Failed to set logger");
 
     // --- CRITICAL INITIALIZATION ---
-    // Register the debug callback to get detailed network logs
     steam_utils::register_debug_callback();
-
-    // Initialize Relay Network Access
     log::info!("初始化 Steam Relay Network Access...");
-    steam_utils::init_relay_network_access();
-
-    // Apply Global P2P Configurations to avoid 5008 timeout
-    log::info!("设置全局 P2P 配置 (禁用 ICE, 允许任意用户)...");
-    steam_utils::set_global_config_value_int32(
-        steamworks_sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable,
-        0, // Disable ICE completely
-    );
-    steam_utils::set_global_config_value_int32(
-        steamworks_sys::ESteamNetworkingConfigValue::k_ESteamNetworkingConfig_IP_AllowWithoutAuth,
-        1, // Allow P2P even without traditional friend auth
-    );
-
-    // Initialize Authentication
-    log::info!("初始化 Steam 认证...");
-    steam_utils::init_authentication(&app_state.steam_client);
-
-    // Wait a bit more for SDR to initialize before allowing any UI action
-    thread::sleep(Duration::from_secs(2));
-
-    // Check initial status
+    app_state
+        .steam_client
+        .networking_utils()
+        .init_relay_network_access();
     steam_utils::check_auth_status(&app_state.steam_client);
-    // -------------------------------
+
+    // 后台等待 SDR 中继就绪（不阻塞回调注册和 UI 启动）
+    let relay_client = app_state.steam_client.clone();
+    thread::spawn(move || {
+        let ready = steam_utils::wait_for_relay_ready(&relay_client, 60, 3);
+        log::info!(
+            "🌐 SDR 中继状态: {}",
+            if ready {
+                "✅ 就绪"
+            } else {
+                "⚠️ 未就绪"
+            }
+        );
+    });
 
     let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     let connections = app_state.connections.clone();
-    let active_handles = app_state.active_handles.clone();
     let client = app_state.steam_client.clone();
 
-    client.register_callback(move |event: NetConnectionStatusChanged| {
-        let event_hack: &NetConnectionStatusChangedHack = unsafe { std::mem::transmute(&event) };
-        let connection_handle = event_hack.connection;
+    // ==================== CRITICAL: 存储所有回调 Handle 防止被 drop ====================
+    // steamworks-rs 的 register_callback 返回 CallbackHandle，
+    // 如果 Handle 被 drop 则回调立即移除！必须用 let _h = 绑定保持存活。
+    let mut _handles: Vec<steamworks::CallbackHandle> = Vec::new();
 
-        match event_hack.connection_info.state() {
-        Ok(NetworkingConnectionState::Connecting) => {
-            let remote = event_hack.connection_info.identity_remote().unwrap();
-            log::info!("P2P 正在连接: {:?}", remote.steam_id());
-        }
-        Ok(NetworkingConnectionState::Connected) => {
-            log::info!("P2P 已连接: 句柄={:?}", connection_handle);
-            let mut handles = active_handles.lock();
-            if !handles.contains(&connection_handle) {
-                handles.push(connection_handle);
+    let h = client.register_callback(move |event: NetConnectionStatusChanged| {
+        let remote_id = event
+            .connection_info
+            .identity_remote()
+            .and_then(|id| id.steam_id());
+
+        match event.connection_info.state() {
+            Ok(NetworkingConnectionState::Connecting) => {
+                log::info!("P2P 正在连接: {:?}", remote_id);
             }
+            Ok(NetworkingConnectionState::Connected) => {
+                log::info!("P2P 已连接: SteamId={:?}", remote_id);
+            }
+            Ok(NetworkingConnectionState::ClosedByPeer)
+            | Ok(NetworkingConnectionState::ProblemDetectedLocally) => {
+                if let Some(id) = remote_id {
+                    log::info!(
+                        "P2P 连接已关闭: SteamId={}, 结束原因={:?}",
+                        id.raw(),
+                        event.connection_info.end_reason()
+                    );
+                    let removed = connections.lock().remove(&id);
+                    log::info!(
+                        "📤 已从连接表移除: SteamId={}, 实际移除={}",
+                        id.raw(),
+                        removed.is_some()
+                    );
+                }
+            }
+            _ => {}
         }
-        Ok(NetworkingConnectionState::ClosedByPeer)
-        | Ok(NetworkingConnectionState::ProblemDetectedLocally) => {
-            let mut conns = connections.lock();
-            let mut handles = active_handles.lock();
-            log::info!(
-                "P2P 连接已关闭/失败: 句柄={:?}",
-                connection_handle
+    });
+    _handles.push(h);
+
+    // Steam 好友通过"加入游戏"直接加入
+    let client_for_rich_join = app_state.steam_client.clone();
+    let h = app_state
+        .steam_client
+        .register_callback(move |join: GameRichPresenceJoinRequested| {
+            let lobby_id_str = join.connect.clone();
+            let friend_id_str = join.friend_steam_id.raw().to_string();
+            let friend_name = client_for_rich_join
+                .friends()
+                .get_friend(join.friend_steam_id)
+                .name();
+            eprintln!(
+                "🎯🎯🎯 [CALLBACK] GameRichPresenceJoinRequested!! 大厅={}",
+                lobby_id_str
             );
-            if let Some(pos) = conns
-                .iter()
-                .position(|c| is_same_conn(c, connection_handle))
-            {
-                conns.remove(pos);
-                log::info!("已从活动列表中移除连接。");
+            log::info!(
+                "🎯 [CALLBACK] GameRichPresenceJoinRequested!! 大厅={}",
+                lobby_id_str
+            );
+            if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+                let _ = handle.emit(
+                    "rich-presence-join",
+                    InviteReceivedPayload {
+                        lobby_id: lobby_id_str,
+                        friend_id: friend_id_str,
+                        friend_name,
+                    },
+                );
+            } else {
+                PENDING_INVITE_EVENTS.lock().push((
+                    "rich-presence-join".into(),
+                    serde_json::to_string(&InviteReceivedPayload {
+                        lobby_id: lobby_id_str,
+                        friend_id: friend_id_str,
+                        friend_name,
+                    })
+                    .unwrap_or_default(),
+                ));
             }
-            if let Some(pos) = handles.iter().position(|&h| h == connection_handle) {
-                handles.remove(pos);
-                log::info!("已从活动句柄中移除。");
-            }
-        }
-        _ => {}
-        }
         });
+    _handles.push(h);
 
-        let client_for_loop = app_state.steam_client.clone();
-        thread::spawn(move || {
+    // LobbyInvite — InviteUserToLobby 后接收方立即触发
+    let client_for_lobby_invite = app_state.steam_client.clone();
+    let h = app_state
+        .steam_client
+        .register_callback(move |invite: LobbyInvite| {
+            let lobby_id_str = invite.lobby.raw().to_string();
+            let friend_id_str = invite.inviter.raw().to_string();
+            let friend_name = client_for_lobby_invite
+                .friends()
+                .get_friend(invite.inviter)
+                .name();
+            eprintln!(
+                "🎯🎯🎯 [CALLBACK] LobbyInvite!! 大厅={} 邀请者={}",
+                lobby_id_str, friend_name
+            );
+            log::info!(
+                "🎯 [CALLBACK] LobbyInvite!! 大厅={} 邀请者={}",
+                lobby_id_str,
+                friend_name
+            );
+            if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+                let _ = handle.emit(
+                    "invite-received",
+                    InviteReceivedPayload {
+                        lobby_id: lobby_id_str,
+                        friend_id: friend_id_str,
+                        friend_name,
+                    },
+                );
+            } else {
+                PENDING_INVITE_EVENTS.lock().push((
+                    "invite-received".into(),
+                    serde_json::to_string(&InviteReceivedPayload {
+                        lobby_id: lobby_id_str,
+                        friend_id: friend_id_str,
+                        friend_name,
+                    })
+                    .unwrap_or_default(),
+                ));
+            }
+        });
+    _handles.push(h);
+
+    // GameLobbyJoinRequested — 用户点 Steam 弹窗 "Join" 后触发
+    let client_for_gljr = app_state.steam_client.clone();
+    let h = app_state
+        .steam_client
+        .register_callback(move |invite: GameLobbyJoinRequested| {
+            let lobby_id_str = invite.lobby_steam_id.raw().to_string();
+            let friend_id_str = invite.friend_steam_id.raw().to_string();
+            let friend_name = client_for_gljr
+                .friends()
+                .get_friend(invite.friend_steam_id)
+                .name();
+            eprintln!(
+                "🎯🎯🎯 [CALLBACK] GameLobbyJoinRequested!! 大厅={}",
+                lobby_id_str
+            );
+            log::info!(
+                "🎯 [CALLBACK] GameLobbyJoinRequested!! 大厅={}",
+                lobby_id_str
+            );
+            if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+                let _ = handle.emit(
+                    "invite-received",
+                    InviteReceivedPayload {
+                        lobby_id: lobby_id_str,
+                        friend_id: friend_id_str,
+                        friend_name,
+                    },
+                );
+            } else {
+                PENDING_INVITE_EVENTS.lock().push((
+                    "invite-received".into(),
+                    serde_json::to_string(&InviteReceivedPayload {
+                        lobby_id: lobby_id_str,
+                        friend_id: friend_id_str,
+                        friend_name,
+                    })
+                    .unwrap_or_default(),
+                ));
+            }
+        });
+    _handles.push(h);
+
+    let h = app_state
+        .steam_client
+        .register_callback(move |created: LobbyCreated| match created.result {
+            Ok(()) => log::info!("✅ 大厅已创建: {}", created.lobby.raw()),
+            Err(_) => log::error!("❌ 大厅创建失败: {}", created.lobby.raw()),
+        });
+    _handles.push(h);
+
+    let h = app_state
+        .steam_client
+        .register_callback(move |enter: LobbyEnter| {
+            let response_str = format!("{:?}", enter.chat_room_enter_response);
+            log::info!(
+                "🚪 已进入大厅: {} (响应: {})",
+                enter.lobby.raw(),
+                response_str
+            );
+            if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+                let _ = handle.emit(
+                    "lobby-entered",
+                    serde_json::json!({
+                        "lobby_id": enter.lobby.raw().to_string(),
+                        "response": response_str,
+                    }),
+                );
+            }
+        });
+    _handles.push(h);
+
+    let h = app_state
+        .steam_client
+        .register_callback(move |update: LobbyChatUpdate| {
+            let change_str = match update.member_state_change {
+                ChatMemberStateChange::Entered => "entered",
+                ChatMemberStateChange::Left => "left",
+                ChatMemberStateChange::Disconnected => "disconnected",
+                ChatMemberStateChange::Kicked => "kicked",
+                ChatMemberStateChange::Banned => "banned",
+            };
+            log::info!(
+                "👥 大厅成员变更: {:?} {} — {}",
+                update.user_changed,
+                change_str,
+                update.lobby.raw()
+            );
+            if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+                let _ = handle.emit(
+                    "lobby-member-changed",
+                    LobbyMemberChangePayload {
+                        user_id: update.user_changed.raw().to_string(),
+                        change: change_str.to_string(),
+                    },
+                );
+            }
+        });
+    _handles.push(h);
+
+    // LobbyChatMsg — 收到大厅聊天消息
+    let chat_history = app_state.chat_history.clone();
+    let client_for_chat = app_state.steam_client.clone();
+    let h = app_state
+        .steam_client
+        .register_callback(move |msg: LobbyChatMsg| {
+            // 跳过自己发送的消息（已在 send_chat_message 中立即添加）
+            let my_id = client_for_chat.user().steam_id();
+            if msg.user == my_id {
+                return;
+            }
+            let mut buf = [0u8; 4096];
+            let data = client_for_chat.matchmaking().get_lobby_chat_entry(
+                msg.lobby,
+                msg.chat_id,
+                &mut buf,
+            );
+            let text = String::from_utf8_lossy(data).to_string();
+            let sender_name = client_for_chat.friends().get_friend(msg.user).name();
+
+            let chat_msg = ChatMessage {
+                sender_id: msg.user.raw().to_string(),
+                sender_name,
+                text,
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            };
+            chat_history.lock().push(chat_msg.clone());
+
+            if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+                let _ = handle.emit("chat-message", chat_msg);
+            }
+        });
+    _handles.push(h);
+
+    let client_for_loop = app_state.steam_client.clone();
+    thread::spawn(move || {
         while shutdown_rx.try_recv().is_err() {
-        client_for_loop.run_callbacks();
-        thread::sleep(Duration::from_millis(10));
+            client_for_loop.run_callbacks();
+            thread::sleep(Duration::from_secs(1));
         }
         log::info!("Steam 回调线程已关闭。");
-        });
+    });
 
-        let app = tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
-        *LOGGER.app_handle.lock() = Some(app.handle().clone());
-        Ok(())
+            *LOGGER.app_handle.lock() = Some(app.handle().clone());
+            drain_pending_events();
+
+            // 系统托盘 - 右键传坐标，前端自定义菜单
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Steam P2P Tunnel")
+                .on_tray_icon_event(|tray, event| {
+                    let app = tray.app_handle();
+                    match event {
+                        TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
+                        }
+                        TrayIconEvent::Click {
+                            button: MouseButton::Right,
+                            button_state: MouseButtonState::Up,
+                            position,
+                            ..
+                        } => {
+                            // 在托盘图标旁创建独立弹出窗口，自动判断位置
+                            let app_handle = app.clone();
+                            let popup_w = 220.0;
+                            let popup_h = 360.0;
+                            let gap = 8.0;
+                            // 如果图标在屏幕下半部分 → 向上弹出，否则向下
+                            let y = if position.y > 600.0 {
+                                (position.y - popup_h - gap).max(0.0)
+                            } else {
+                                position.y + gap
+                            };
+                            let x = (position.x - popup_w / 2.0).max(8.0).min(position.x + 8.0);
+                            if let Ok(window) = tauri::WebviewWindowBuilder::new(
+                                &app_handle,
+                                "tray-popup",
+                                tauri::WebviewUrl::App("index.html?view=tray-menu".into()),
+                            )
+                            .title("")
+                            .inner_size(popup_w, popup_h)
+                            .position(x, y)
+                            .decorations(false)
+                            .always_on_top(true)
+                            .skip_taskbar(true)
+                            .shadow(false)
+                            .transparent(true)
+                            .build()
+                            {
+                                let _ = window.set_focus();
+                                let win2 = window.clone();
+                                window.on_window_event(move |event| {
+                                    if let tauri::WindowEvent::Focused(false) = event {
+                                        let _ = win2.close();
+                                    }
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                })
+                .build(app)?;
+
+            Ok(())
         })
         .manage(app_state.clone())
         .invoke_handler(tauri::generate_handler![
-        steam_commands::get_friends,
-        steam_commands::create_lobby,
-        steam_commands::search_lobbies,
-        steam_commands::join_lobby,
-        steam_commands::connect_to_host,
-        steam_commands::leave_lobby,
-        steam_commands::start_hosting,
-        steam_commands::stop_hosting,
-        steam_commands::send_invite,
-        steam_commands::get_lobby_members,
-        steam_commands::get_network_status,
-        open_log_window,
-        get_log_history,
-        get_memory_usage
+            steam_commands::get_friends,
+            steam_commands::create_lobby,
+            steam_commands::search_lobbies,
+            steam_commands::join_lobby,
+            steam_commands::connect_to_host,
+            steam_commands::leave_lobby,
+            steam_commands::start_hosting,
+            steam_commands::stop_hosting,
+            steam_commands::send_invite,
+            steam_commands::get_lobby_members,
+            steam_commands::get_network_status,
+            steam_commands::resolve_game_name,
+            steam_commands::get_local_user_id,
+            steam_commands::show_main_window,
+            steam_commands::quit_app,
+            chat::send_chat_message,
+            chat::get_chat_history,
+            open_log_window,
+            get_log_history,
+            get_memory_usage
         ])
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用时出错");
 
-        app.run(|_app_handle, event| match event {
-        tauri::RunEvent::ExitRequested { api, .. } => {
-        log::info!("收到 Tauri 退出请求。正在清理网络任务...");
-        api.prevent_exit();
-        log::info!("应用程序即将退出。");
-        std::process::exit(0);
+    let app_state_for_cleanup = app_state.clone();
+    let shutdown_tx_for_cleanup = std::sync::Mutex::new(Some(shutdown_tx.clone()));
+
+    app.run(move |_app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
+            log::info!("收到退出请求。正在清理网络任务...");
+            net_manager::stop_network(&app_state_for_cleanup);
+            drop(shutdown_tx_for_cleanup.lock().unwrap().take());
+            log::info!("清理完成，应用即将退出。");
         }
         _ => {}
-        });
-
-        log::info!("Tauri 应用程序已退出。正在清理后台任务...");
-        net_manager::stop_network(&app_state);
-        drop(shutdown_tx);
-        log::info!("清理完成。进程现在应该正常终止。");}
+    });
+}

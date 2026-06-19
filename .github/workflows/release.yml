@@ -38,6 +38,17 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+<<<<<<< HEAD
+=======
+      - name: Sync version from tag
+        shell: bash
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+          jq --arg v "$VERSION" '.version = $v' package.json > tmp.json && mv tmp.json package.json
+          jq --arg v "$VERSION" '.version = $v' src-tauri/tauri.conf.json > tmp.json && mv tmp.json src-tauri/tauri.conf.json
+
+>>>>>>> dev
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0
         env:

@@ -1,92 +1,104 @@
-import {useEffect, useState} from "react";
 import {invoke} from "@tauri-apps/api/core";
+import {Crown, Network, User} from "lucide-react";
+import {useEffect, useState} from "react";
 import {MemberInfo} from "../types";
-import {User, Shield} from "lucide-react";
+
+const getPingColor = (ping: number) => {
+	if (ping < 0) return "text-muted-foreground";
+	if (ping === 0) return "text-[rgb(var(--chart-1))]";
+	if (ping < 60) return "text-[rgb(var(--chart-5))]";
+	if (ping < 120) return "text-[rgb(var(--chart-1))]";
+	return "text-destructive";
+};
+
+const getRelayStyle = (relay: string) => {
+	if (relay.includes("本地") || relay.includes("Local"))
+		return "bg-[rgb(var(--chart-1)/0.15)] text-[rgb(var(--chart-1))] border-[rgb(var(--chart-1)/0.3)] font-bold";
+	if (relay.includes("P2P") || relay.includes("直连"))
+		return "bg-[rgb(var(--chart-5)/0.15)] text-[rgb(var(--chart-5))] border-[rgb(var(--chart-5)/0.3)] font-bold";
+	if (
+		relay.includes("中继") ||
+		relay.includes("Relay") ||
+		relay.includes("SDR")
+	)
+		return "bg-[rgb(var(--chart-2)/0.3)] text-[rgb(var(--chart-1))] border-[rgb(var(--chart-2)/0.5)] font-bold";
+	return "bg-muted text-muted-foreground border-border";
+};
 
 export function MemberList() {
-    const [members, setMembers] = useState<MemberInfo[]>([]);
+	const [members, setMembers] = useState<MemberInfo[]>([]);
 
-    useEffect(() => {
-        const fetchMembers = async () => {
-            try {
-                const res = await invoke<MemberInfo[]>("get_lobby_members");
-                setMembers(res);
-            } catch (e) {
-                console.error(e);
-            }
-        };
+	useEffect(() => {
+		const fetchMembers = async () => {
+			try {
+				const res = await invoke<MemberInfo[]>("get_lobby_members");
+				setMembers(res);
+			} catch (e) {
+				console.error(e);
+			}
+		};
 
-        fetchMembers();
-        const interval = setInterval(fetchMembers, 2000);
-        return () => clearInterval(interval);
-    }, []);
+		fetchMembers();
+		const interval = setInterval(fetchMembers, 2000);
+		return () => clearInterval(interval);
+	}, []);
 
-    return (
-        <div className="w-full h-full flex flex-col">
-            <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                    <thead>
-                    <tr className="border-b border-white/5 text-[10px] uppercase tracking-[0.2em] text-slate-500 font-bold">
-                        <th className="px-6 py-4">成员名称</th>
-                        <th className="px-6 py-4">身份 / 权限</th>
-                        {/* <th className="p-4 font-medium">状态</th> */}
-                        {/* <th className="p-4 font-medium">连接类型</th> */}
-                    </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                    {members.map((member, index) => (
-                        <tr key={member.id} className="hover:bg-white/[0.02] transition-colors group">
-                            <td className="px-6 py-4">
-                                <div className="flex items-center gap-4">
-                                    <div
-                                        className="w-10 h-10 rounded-xl bg-gradient-to-br from-slate-800 to-slate-900 border border-white/10 flex items-center justify-center text-slate-400 group-hover:text-blue-400 group-hover:border-blue-500/30 transition-all duration-300 shadow-lg">
-                                        <User size={18}/>
-                                    </div>
-                                    <div className="flex flex-col">
-                                        <span className="font-semibold text-slate-200 group-hover:text-white transition-colors">{member.name}</span>
-                                        <span className="text-[10px] text-slate-500 font-mono uppercase tracking-tight">ID: {member.id}</span>
-                                    </div>
-                                </div>
-                            </td>
-                            <td className="px-6 py-4">
-                                <div className="flex items-center gap-2">
-                                    <Shield size={14} className={index === 0 ? "text-amber-500" : "text-blue-500/50"} />
-                                    <span className={`text-xs font-medium ${index === 0 ? "text-amber-500/80" : "text-slate-400"}`}>
-                                        {index === 0 ? "房主" : "受邀成员"}
-                                    </span>
-                                </div>
-                            </td>
-                            {/* <td className="p-4">
-                                <div className="flex items-center gap-2">
-                                    <Network size={14}
-                                             className={member.ping < 100 ? "text-green-500" : "text-yellow-500"}/>
-                                    <span className="font-mono text-sm text-slate-400">
-                        {member.ping === 0 ? "本机" : `${member.ping}ms`}
-                      </span>
-                                </div>
-                            </td>
-                            <td className="p-4">
-                    <span className="text-xs px-2 py-1 rounded bg-slate-800 text-slate-400 border border-slate-700">
-                      {member.relay}
-                    </span>
-                            </td> */}
-                        </tr>
-                    ))}
-                    {members.length === 0 && (
-                        <tr>
-                            <td colSpan={2} className="p-20 text-center">
-                                <div className="flex flex-col items-center gap-3 text-slate-600">
-                                    <div className="w-12 h-12 rounded-full border-2 border-dashed border-slate-800 flex items-center justify-center animate-spin-slow">
-                                        <User size={24} />
-                                    </div>
-                                    <p className="text-sm font-medium tracking-wide italic">正在等待数据同步...</p>
-                                </div>
-                            </td>
-                        </tr>
-                    )}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
+	return (
+		<div className="w-full space-y-2">
+			{members.map((member, index) => {
+				const isHost = index === 0;
+				return (
+					<div
+						key={member.id}
+						className="flex items-center gap-3 p-4 rounded-2xl bg-muted/30 border-border"
+					>
+						<div
+							className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isHost ? "bg-[rgb(var(--chart-1)/0.15)] ring-1 ring-[rgb(var(--chart-1)/0.3)]" : "bg-card border border-border"}`}
+						>
+							{isHost ? (
+								<Crown className="w-4 h-4 text-[rgb(var(--chart-1))]" />
+							) : (
+								<User className="w-4 h-4 text-muted-foreground" />
+							)}
+						</div>
+						<div className="flex-1 min-w-0">
+							<div className="flex items-center gap-2">
+								<span className="text-sm font-semibold text-foreground truncate">
+									{member.name}
+								</span>
+								{isHost && (
+									<span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-[rgb(var(--chart-1)/0.15)] text-[rgb(var(--chart-1))] uppercase tracking-wider">
+										房主
+									</span>
+								)}
+							</div>
+						</div>
+						<div className="flex items-center gap-3 shrink-0">
+							<div
+								className={`flex items-center gap-1 text-xs font-mono font-semibold w-14 justify-end ${getPingColor(member.ping)}`}
+							>
+								<Network className="w-3.5 h-3.5" />
+								{member.ping < 0
+									? "--"
+									: member.ping === 0
+										? "本机"
+										: `${member.ping}ms`}
+							</div>
+							<span
+								className={`text-[10px] font-bold px-2 py-1 rounded-lg border w-28 text-center ${getRelayStyle(member.relay)}`}
+							>
+								{member.relay}
+							</span>
+						</div>
+					</div>
+				);
+			})}
+			{members.length === 0 && (
+				<div className="text-center py-12 text-muted-foreground">
+					<User className="w-8 h-8 mx-auto mb-3 opacity-20" />
+					<p className="text-sm">等待成员加入...</p>
+				</div>
+			)}
+		</div>
+	);
 }

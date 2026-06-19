@@ -1,17 +1,20 @@
 use crate::app_state::{AppState, TunnelState};
 use crate::error::{AppError, AppResult};
 use crate::net_manager;
-use crate::steam_utils;
 use serde::Serialize;
 use steamworks::networking_types::NetworkingConnectionState;
 use steamworks::{FriendFlags, LobbyId, LobbyType, SteamError, SteamId};
-use tauri::State;
+use tauri::{Manager, State};
 use tokio::sync::oneshot;
 
 #[derive(Serialize, Clone)]
 pub struct FriendInfo {
     pub id: String,
     pub name: String,
+    pub state: String,      // "在线", "离开", "忙碌", "离线" 等
+    pub game_id: u32,       // 正在玩的游戏 AppId，0=没在玩，480=本应用
+    pub state_priority: u8, // 0=在线/游戏中, 1=离开/交易中, 2=忙碌, 3=隐身, 4=离线
+    pub in_this_game: bool, // 是否也在玩本应用 (AppId 480)
 }
 
 #[derive(Serialize, Clone)]
@@ -41,6 +44,8 @@ pub struct NetworkStatusInfo {
     pub ping: i32,
     #[serde(rename = "connectionType")]
     pub connection_type: String,
+    #[serde(rename = "lobbyId")]
+    pub lobby_id: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -55,12 +60,54 @@ pub struct MemberInfo {
 pub fn get_friends(state: State<'_, AppState>) -> Vec<FriendInfo> {
     let friends = state.steam_client.friends();
     let list = friends.get_friends(FriendFlags::IMMEDIATE);
-    list.into_iter()
-        .map(|f| FriendInfo {
-            id: f.id().raw().to_string(),
-            name: f.name(),
+    let mut result: Vec<FriendInfo> = list
+        .into_iter()
+        .map(|f| {
+            let (state_str, priority) = match f.state() {
+                steamworks::FriendState::Online => ("在线", 0u8),
+                steamworks::FriendState::LookingToPlay => ("游戏中", 0u8),
+                steamworks::FriendState::LookingToTrade => ("交易中", 1u8),
+                steamworks::FriendState::Away => ("离开", 1u8),
+                steamworks::FriendState::Snooze => ("离开", 1u8),
+                steamworks::FriendState::Busy => ("忙碌", 2u8),
+                steamworks::FriendState::Invisible => ("隐身", 3u8),
+                steamworks::FriendState::Offline => ("离线", 4u8),
+            };
+            let game_id = match f.game_played() {
+                Some(g) => g.game.app_id().0,
+                None => 0,
+            };
+            let in_this_game = game_id == 480;
+
+            FriendInfo {
+                id: f.id().raw().to_string(),
+                name: f.name(),
+                state: state_str.to_string(),
+                game_id,
+                state_priority: priority,
+                in_this_game,
+            }
         })
-        .collect()
+        .collect();
+    result.sort_by_key(|f| f.state_priority);
+    result
+}
+
+/// 后端代理 Steam API，避免前端 CORS 问题
+#[tauri::command]
+pub async fn resolve_game_name(app_id: u32) -> Option<String> {
+    let url = format!(
+        "https://store.steampowered.com/api/appdetails?appids={}&l=schinese",
+        app_id
+    );
+    if let Ok(resp) = reqwest::get(&url).await {
+        if let Ok(json) = resp.json::<serde_json::Value>().await {
+            return json[&app_id.to_string()]["data"]["name"]
+                .as_str()
+                .map(|s| s.to_string());
+        }
+    }
+    None
 }
 
 #[tauri::command]
@@ -186,8 +233,9 @@ pub async fn connect_to_host(
     if host_id != my_id {
         net_manager::start_network_client(&state, host_id, local_port).await
     } else {
-        log::info!("Player is the host, no need to connect_to_host.");
-        Ok(())
+        Err(AppError::Network(
+            "Cannot connect to yourself. You are the host.".to_string(),
+        ))
     }
 }
 
@@ -232,23 +280,37 @@ pub fn send_invite(state: State<'_, AppState>, friend_id_str: String) -> AppResu
     let friend_id_u64 = friend_id_str
         .parse::<u64>()
         .map_err(|_| AppError::Parse("Invalid Friend ID".to_string()))?;
+    let friend_id = SteamId::from_raw(friend_id_u64);
     let tunnel_state = state.state.lock();
 
-    let lobby_id_opt = match *tunnel_state {
+    let lobby_id = match *tunnel_state {
         TunnelState::Hosting(id) => Some(id),
         TunnelState::Joined(id) => Some(id),
         TunnelState::Idle => None,
     };
 
-    if let Some(lobby_id) = lobby_id_opt {
-        let success = steam_utils::invite_user_to_lobby(lobby_id.raw(), friend_id_u64);
-        if success {
+    match lobby_id {
+        Some(lobby_id) => {
+            let mm_ptr = unsafe { steamworks::sys::SteamAPI_SteamMatchmaking_v009() };
+            let result = unsafe {
+                steamworks::sys::SteamAPI_ISteamMatchmaking_InviteUserToLobby(
+                    mm_ptr,
+                    lobby_id.raw(),
+                    friend_id.raw(),
+                )
+            };
+            let friend_name = state.steam_client.friends().get_friend(friend_id).name();
+            log::info!(
+                "📨 InviteUserToLobby → {}: {}",
+                friend_name,
+                if result { "成功" } else { "失败" }
+            );
+            if !result {
+                return Err(AppError::Network("邀请发送失败".to_string()));
+            }
             Ok(())
-        } else {
-            Err(AppError::Lobby("Failed to send invite".to_string()))
         }
-    } else {
-        Err(AppError::Lobby("Not in a lobby".to_string()))
+        None => Err(AppError::Lobby("Not in a lobby".to_string())),
     }
 }
 
@@ -267,13 +329,16 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
         let members = matchmaking.lobby_members(lobby_id);
         let my_id = state.steam_client.user().steam_id();
 
-        // 获取所有活动的真实句柄
-        let active_handles = state.active_handles.lock();
+        // 从 HashMap 中查找每个成员的连接状态
+        let connections = state.connections.lock();
+        let sockets = state.steam_client.networking_sockets();
+        let conn_count = connections.len();
 
         members
             .into_iter()
             .map(|member_id| {
                 let friend_obj = friends.get_friend(member_id);
+                let member_id_str = member_id.raw().to_string();
 
                 let mut ping = -1;
                 let mut relay = "Unknown".to_string();
@@ -281,29 +346,60 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
                 if member_id == my_id {
                     ping = 0;
                     relay = "本地 (Local)".to_string();
-                } else {
-                    // 遍历所有活动句柄，寻找匹配该成员 SteamID 的连接
-                    for &handle in active_handles.iter() {
-                        if let Some(stats) = steam_utils::get_stats_from_handle(handle) {
-                            // 重新通过底层 API 获取该句柄对应的 SteamID
-                            unsafe {
-                                let sockets_ptr = steamworks_sys::SteamAPI_SteamNetworkingSockets_SteamAPI_v012();
-                                let mut info: steamworks_sys::SteamNetConnectionInfo_t = std::mem::zeroed();
-                                if steamworks_sys::SteamAPI_ISteamNetworkingSockets_GetConnectionInfo(sockets_ptr, handle, &mut info) {
-                                    let remote_id = info.m_identityRemote.__bindgen_anon_1.m_steamID64;
-                                    if remote_id == member_id.raw() {
-                                        ping = stats.ping;
-                                        relay = stats.connection_type;
-                                        break;
+                } else if let Some(conn) = connections.get(&member_id) {
+                    log::debug!(
+                        "🔍 查询成员 {} 的连接状态 ({} 条活动连接中)",
+                        friend_obj.name(),
+                        conn_count
+                    );
+                    match sockets.get_realtime_connection_status(conn, 0) {
+                        Ok((info, _lanes)) => {
+                            ping = info.ping();
+                            let state_result = info.connection_state();
+                            relay = match state_result {
+                                Ok(state) => {
+                                    log::debug!(
+                                        "✅ 成员 {} 连接状态: {:?}, ping={}ms",
+                                        friend_obj.name(),
+                                        state,
+                                        ping
+                                    );
+                                    match state {
+                                        NetworkingConnectionState::Connected => {
+                                            "P2P (Connected)".to_string()
+                                        }
+                                        _ => format!("{:?}", state),
                                     }
                                 }
-                            }
+                                Err(_) => {
+                                    log::warn!(
+                                        "⚠️ 成员 {} 无法获取连接状态枚举值",
+                                        friend_obj.name()
+                                    );
+                                    format!("ping={}", ping)
+                                }
+                            };
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "⚠️ 成员 {} 的 get_realtime_connection_status 失败: {:?}",
+                                friend_obj.name(),
+                                e
+                            );
+                            relay = "Error".to_string();
                         }
                     }
+                } else {
+                    log::debug!(
+                        "📌 成员 {} (id={}) 不在活动连接表中 (my_id={})",
+                        friend_obj.name(),
+                        member_id_str,
+                        my_id.raw()
+                    );
                 }
 
                 MemberInfo {
-                    id: member_id.raw().to_string(),
+                    id: member_id_str,
                     name: friend_obj.name(),
                     ping,
                     relay,
@@ -318,20 +414,26 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
 #[tauri::command]
 pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
     let tunnel_state = *state.state.lock();
-    let client_count = state.connections.lock().len();
+    let connections = state.connections.lock();
+    let client_count = connections.len();
     let is_host = matches!(tunnel_state, TunnelState::Hosting(_));
 
     let mut ping = -1;
     let mut connection_type = "未连接 (Not Connected)".to_string();
     let mut is_connected = false;
 
-    // 从活动句柄中获取第一个有效句柄的状态作为概览
-    let active_handles = state.active_handles.lock();
-    if let Some(&handle) = active_handles.first() {
-        if let Some(stats) = steam_utils::get_stats_from_handle(handle) {
-            ping = stats.ping;
-            connection_type = stats.connection_type;
-            is_connected = stats.state == NetworkingConnectionState::Connected;
+    // 从 HashMap 中获取第一个连接的实时状态作为概览
+    let sockets = state.steam_client.networking_sockets();
+    if let Some((_id, conn)) = connections.iter().next() {
+        if let Ok((info, _lanes)) = sockets.get_realtime_connection_status(conn, 0) {
+            ping = info.ping();
+            if let Ok(state) = info.connection_state() {
+                is_connected = state == NetworkingConnectionState::Connected;
+                connection_type = match state {
+                    NetworkingConnectionState::Connected => "P2P (Connected)".to_string(),
+                    _ => format!("{:?}", state),
+                };
+            }
         }
     }
 
@@ -341,6 +443,12 @@ pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
         TunnelState::Idle => "空闲".to_string(),
     };
 
+    let lobby_id = match tunnel_state {
+        TunnelState::Hosting(id) => Some(id.raw().to_string()),
+        TunnelState::Joined(id) => Some(id.raw().to_string()),
+        TunnelState::Idle => None,
+    };
+
     NetworkStatusInfo {
         is_host,
         is_connected,
@@ -348,5 +456,28 @@ pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
         status_message,
         ping,
         connection_type,
+        lobby_id,
     }
+}
+
+/// 获取当前登录用户的 Steam ID
+#[tauri::command]
+pub fn get_local_user_id(state: State<'_, AppState>) -> String {
+    state.steam_client.user().steam_id().raw().to_string()
+}
+
+/// 在托盘弹出窗口中使用：显示主窗口
+#[tauri::command]
+pub fn show_main_window(app_handle: tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.center();
+    }
+}
+
+/// 在托盘弹出窗口中使用：关闭主窗口（完全退出）
+#[tauri::command]
+pub fn quit_app(app_handle: tauri::AppHandle) {
+    app_handle.exit(0);
 }

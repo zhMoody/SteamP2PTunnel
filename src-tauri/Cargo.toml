@@ -1,6 +1,6 @@
 [package]
 name = "steam_p2p_tunnel"
-version = "0.1.0"
+version = "0.2.0"
 description = "A Steam P2P tunneling tool for LAN games"
 authors = ["Moody"]
 edition = "2021"
@@ -13,15 +13,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 native-dialog = "0.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# GitHub 最新版
-steamworks = "0.12.2"
-# 直接调用底层 C 接口
-steamworks-sys = "0.11"
+# 自己 fork 的 steamworks-rs
+steamworks = { git = "https://github.com/zhMoody/steamworks-rs.git", features = [
+  "raw-bindings",
+] }
 tokio = { version = "1", features = ["full"] }
 nanoid = "0.4"
 bytes = "1.5"
@@ -34,3 +34,4 @@ tokio-util = "0.7.18"
 chrono = "0.4.44"
 circular-queue = "0.2.7"
 sysinfo = { version = "0.38.4", features = ["serde"] }
+reqwest = { version = "0.12", features = ["json"] }
