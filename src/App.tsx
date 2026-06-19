@@ -23,7 +23,8 @@ function App() {
 		richPresenceJoin,
 		clearPendingInvite,
 		clearRichPresenceJoin,
-		refreshStatus
+		refreshStatus,
+		hydrated
 	} = useApp();
 	const {isConnected, statusMessage} = networkStatus;
 
@@ -92,7 +93,22 @@ function App() {
 	return (
 		<div className="h-screen w-screen flex flex-col font-sans select-none overflow-hidden bg-background text-foreground">
 			<TitleBar />
-			<Toaster position="top-center" />
+			<Toaster
+				position="top-center"
+				toastOptions={{
+					duration: 3000,
+					style: {
+						background: "rgb(var(--card))",
+						color: "rgb(var(--foreground))",
+						border: "1px solid rgb(var(--border) / 0.6)",
+						borderRadius: "14px",
+						padding: "14px 20px",
+						fontSize: "14px",
+						fontWeight: 500,
+						boxShadow: "0 12px 40px rgba(0,0,0,0.25)"
+					}
+				}}
+			/>
 
 			{/* Invite Modal - 始终显示，已在房间时提示先离开 */}
 			{pendingInvite && (
@@ -214,14 +230,18 @@ function App() {
 				</div>
 			</header>
 
-			{/* Main Content - Centered Card */}
-			<main className="flex-1 flex items-center justify-center p-4 md:p-8 overflow-hidden relative">
+			{/* Main Content */}
+			<main className="flex-1 flex flex-col items-center p-4 md:p-6 pb-12 overflow-y-auto overflow-x-hidden relative">
 				{/* 柔和背景光晕 */}
 				<div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-[500px] h-[300px] rounded-full bg-primary/5 blur-[100px] pointer-events-none" />
 				<div className="absolute bottom-1/4 right-1/4 w-[250px] h-[250px] rounded-full bg-primary/[0.03] blur-[80px] pointer-events-none" />
 
-				<div className="w-full max-w-md">
-					{!isInLobby ? (
+				<div className={`w-full ${isInLobby ? "max-w-4xl" : "max-w-md"}`}>
+					{!hydrated ? (
+						<div className="flex items-center justify-center h-[300px] text-xs text-muted-foreground">
+							正在恢复上一次会话...
+						</div>
+					) : !isInLobby ? (
 						<ConnectionPanel />
 					) : (
 						<LobbyPanel onDisconnect={handleDisconnect} />

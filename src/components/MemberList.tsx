@@ -6,22 +6,22 @@ import {MemberInfo} from "../types";
 const getPingColor = (ping: number) => {
 	if (ping < 0) return "text-muted-foreground";
 	if (ping === 0) return "text-[rgb(var(--chart-1))]";
-	if (ping < 80) return "text-[rgb(var(--chart-1))]";
-	if (ping < 200) return "text-[rgb(var(--chart-4))]";
+	if (ping < 60) return "text-[rgb(var(--chart-5))]";
+	if (ping < 120) return "text-[rgb(var(--chart-1))]";
 	return "text-destructive";
 };
 
 const getRelayStyle = (relay: string) => {
 	if (relay.includes("本地") || relay.includes("Local"))
-		return "bg-[rgb(var(--chart-1)/0.15)] text-[rgb(var(--chart-1))] border-[rgb(var(--chart-1)/0.25)]";
+		return "bg-[rgb(var(--chart-1)/0.15)] text-[rgb(var(--chart-1))] border-[rgb(var(--chart-1)/0.3)] font-bold";
 	if (relay.includes("P2P") || relay.includes("直连"))
-		return "bg-[rgb(var(--chart-2)/0.15)] text-[rgb(var(--chart-2))] border-[rgb(var(--chart-2)/0.25)]";
+		return "bg-[rgb(var(--chart-5)/0.15)] text-[rgb(var(--chart-5))] border-[rgb(var(--chart-5)/0.3)] font-bold";
 	if (
 		relay.includes("中继") ||
 		relay.includes("Relay") ||
 		relay.includes("SDR")
 	)
-		return "bg-[rgb(var(--chart-4)/0.15)] text-[rgb(var(--chart-4))] border-[rgb(var(--chart-4)/0.25)]";
+		return "bg-[rgb(var(--chart-2)/0.3)] text-[rgb(var(--chart-1))] border-[rgb(var(--chart-2)/0.5)] font-bold";
 	return "bg-muted text-muted-foreground border-border";
 };
 
@@ -50,15 +50,15 @@ export function MemberList() {
 				return (
 					<div
 						key={member.id}
-						className="flex items-center gap-4 p-4 rounded-xl bg-muted/20 border border-border/50 hover:border-ring/30 transition-colors"
+						className="flex items-center gap-3 p-4 rounded-2xl bg-muted/30 border-border"
 					>
 						<div
-							className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isHost ? "bg-[rgb(var(--chart-1)/0.15)] ring-1 ring-[rgb(var(--chart-1)/0.3)]" : "bg-muted"}`}
+							className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isHost ? "bg-[rgb(var(--chart-1)/0.15)] ring-1 ring-[rgb(var(--chart-1)/0.3)]" : "bg-card border border-border"}`}
 						>
 							{isHost ? (
-								<Crown className="w-5 h-5 text-[rgb(var(--chart-1))]" />
+								<Crown className="w-4 h-4 text-[rgb(var(--chart-1))]" />
 							) : (
-								<User className="w-5 h-5 text-muted-foreground" />
+								<User className="w-4 h-4 text-muted-foreground" />
 							)}
 						</div>
 						<div className="flex-1 min-w-0">
@@ -67,18 +67,15 @@ export function MemberList() {
 									{member.name}
 								</span>
 								{isHost && (
-									<span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded bg-[rgb(var(--chart-1)/0.15)] text-[rgb(var(--chart-1))] uppercase tracking-wider">
+									<span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-[rgb(var(--chart-1)/0.15)] text-[rgb(var(--chart-1))] uppercase tracking-wider">
 										房主
 									</span>
 								)}
 							</div>
-							<span className="text-[10px] text-muted-foreground font-mono tracking-tight">
-								{member.id}
-							</span>
 						</div>
-						<div className="flex items-center gap-4 shrink-0">
+						<div className="flex items-center gap-3 shrink-0">
 							<div
-								className={`flex items-center gap-1.5 text-xs font-mono font-semibold ${getPingColor(member.ping)}`}
+								className={`flex items-center gap-1 text-xs font-mono font-semibold w-14 justify-end ${getPingColor(member.ping)}`}
 							>
 								<Network className="w-3.5 h-3.5" />
 								{member.ping < 0
@@ -88,7 +85,7 @@ export function MemberList() {
 										: `${member.ping}ms`}
 							</div>
 							<span
-								className={`text-[10px] font-bold px-2 py-1 rounded-lg border ${getRelayStyle(member.relay)}`}
+								className={`text-[10px] font-bold px-2 py-1 rounded-lg border w-28 text-center ${getRelayStyle(member.relay)}`}
 							>
 								{member.relay}
 							</span>

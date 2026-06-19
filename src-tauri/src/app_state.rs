@@ -27,6 +27,14 @@ pub struct LogEntry {
     pub message: String,
 }
 
+#[derive(Serialize, Clone, Debug)]
+pub struct ChatMessage {
+    pub sender_id: String,
+    pub sender_name: String,
+    pub text: String,
+    pub timestamp: String,
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub steam_client: Client,
@@ -36,6 +44,7 @@ pub struct AppState {
     /// P2P 连接表，以远端 SteamId 为 key
     pub connections: Arc<Mutex<HashMap<SteamId, NetConnection>>>,
     pub logs: Arc<Mutex<CircularQueue<LogEntry>>>,
+    pub chat_history: Arc<Mutex<CircularQueue<ChatMessage>>>,
 }
 
 impl AppState {
@@ -54,6 +63,7 @@ impl AppState {
             cancel_token: Arc::new(Mutex::new(CancellationToken::new())),
             connections: Arc::new(Mutex::new(HashMap::new())),
             logs: Arc::new(Mutex::new(CircularQueue::with_capacity(500))),
+            chat_history: Arc::new(Mutex::new(CircularQueue::with_capacity(200))),
         })
     }
 }

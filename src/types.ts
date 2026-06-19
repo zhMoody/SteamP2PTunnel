@@ -28,6 +28,7 @@ export interface NetworkStatus {
 	statusMessage: string;
 	ping: number;
 	connectionType: string;
+	lobbyId: string | null;
 }
 
 export interface JoinLobbyResult {

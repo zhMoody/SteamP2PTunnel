@@ -33,6 +33,7 @@ interface AppContextType extends AppState {
 	refreshStatus: () => Promise<void>;
 	clearPendingInvite: () => void;
 	clearRichPresenceJoin: () => void;
+	hydrated: boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -43,7 +44,8 @@ const initialNetworkStatus: NetworkStatus = {
 	tcpClientCount: 0,
 	statusMessage: "Initializing...",
 	ping: 0,
-	connectionType: "Unknown"
+	connectionType: "Unknown",
+	lobbyId: null
 };
 
 export const AppProvider = ({children}: {children: ReactNode}) => {
@@ -54,13 +56,16 @@ export const AppProvider = ({children}: {children: ReactNode}) => {
 		pendingInvite: null,
 		richPresenceJoin: null
 	});
+	const [hydrated, setHydrated] = useState(false);
 
 	const refreshStatus = useCallback(async () => {
 		try {
 			const status = await invoke<NetworkStatus>("get_network_status");
 			setState((prevState) => ({
 				...prevState,
-				networkStatus: status
+				networkStatus: status,
+				// 后端状态恢复 → 自动同步 lobbyId
+				currentLobbyId: status.lobbyId ?? prevState.currentLobbyId
 			}));
 		} catch (e) {
 			console.error("Failed to get network status:", e);
@@ -90,11 +95,18 @@ export const AppProvider = ({children}: {children: ReactNode}) => {
 		setState((prevState) => ({...prevState, richPresenceJoin: null}));
 	};
 
+	// 挂载时立即恢复状态，避免 UI 闪烁
+	useEffect(() => {
+		refreshStatus().finally(() => setHydrated(true));
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, []);
+
 	// 定时刷新网络状态
 	useEffect(() => {
+		if (!hydrated) return;
 		const interval = setInterval(refreshStatus, 1000);
 		return () => clearInterval(interval);
-	}, [refreshStatus]);
+	}, [refreshStatus, hydrated]);
 
 	// 监听 Steam 大厅邀请（弹窗）
 	useEffect(() => {
@@ -152,7 +164,8 @@ export const AppProvider = ({children}: {children: ReactNode}) => {
 		setCurrentLobbyId,
 		refreshStatus,
 		clearPendingInvite,
-		clearRichPresenceJoin
+		clearRichPresenceJoin,
+		hydrated
 	};
 	return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 };

@@ -1,21 +1,19 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Capability for the main and logs windows",
-  "windows": [
-    "main",
-    "logs"
-  ],
-  "permissions": [
-    "core:default",
-    "opener:default",
-    "core:event:default",
-    "core:webview:default",
-    "core:window:allow-close",
-    "core:window:allow-minimize",
-    "core:window:allow-maximize",
-    "core:window:allow-toggle-maximize",
-    "core:window:allow-set-focus",
-    "core:window:allow-start-dragging"
-  ]
+	"$schema": "../gen/schemas/desktop-schema.json",
+	"identifier": "default",
+	"description": "Capability for the main and logs windows",
+	"windows": ["main", "logs"],
+	"permissions": [
+		"core:default",
+		"opener:default",
+		"core:event:default",
+		"core:webview:default",
+		"core:window:allow-close",
+		"core:window:allow-minimize",
+		"core:window:allow-hide",
+		"core:window:allow-show",
+		"core:window:allow-center",
+		"core:window:allow-set-focus",
+		"core:window:allow-start-dragging"
+	]
 }

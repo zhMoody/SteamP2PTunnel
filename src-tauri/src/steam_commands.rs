@@ -44,6 +44,8 @@ pub struct NetworkStatusInfo {
     pub ping: i32,
     #[serde(rename = "connectionType")]
     pub connection_type: String,
+    #[serde(rename = "lobbyId")]
+    pub lobby_id: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -441,6 +443,12 @@ pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
         TunnelState::Idle => "空闲".to_string(),
     };
 
+    let lobby_id = match tunnel_state {
+        TunnelState::Hosting(id) => Some(id.raw().to_string()),
+        TunnelState::Joined(id) => Some(id.raw().to_string()),
+        TunnelState::Idle => None,
+    };
+
     NetworkStatusInfo {
         is_host,
         is_connected,
@@ -448,5 +456,12 @@ pub fn get_network_status(state: State<'_, AppState>) -> NetworkStatusInfo {
         status_message,
         ping,
         connection_type,
+        lobby_id,
     }
+}
+
+/// 获取当前登录用户的 Steam ID
+#[tauri::command]
+pub fn get_local_user_id(state: State<'_, AppState>) -> String {
+    state.steam_client.user().steam_id().raw().to_string()
 }

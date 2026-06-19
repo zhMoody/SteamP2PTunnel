@@ -3,8 +3,8 @@
 use circular_queue::CircularQueue;
 use log::{Level, LevelFilter, Metadata, Record};
 use mcct_lib::{
-    app_state::{AppState, LogEntry},
-    net_manager, steam_commands, steam_utils,
+    app_state::{AppState, ChatMessage, LogEntry},
+    chat, net_manager, steam_commands, steam_utils,
 };
 use native_dialog::{MessageDialog, MessageType};
 use parking_lot::Mutex;
@@ -17,10 +17,12 @@ use std::time::Duration;
 use steamworks::networking_types::{NetConnectionStatusChanged, NetworkingConnectionState};
 use steamworks::{
     Callback, ChatMemberStateChange, GameLobbyJoinRequested, GameRichPresenceJoinRequested,
-    LobbyChatUpdate, LobbyCreated, LobbyEnter, LobbyId, SteamId,
+    LobbyChatMsg, LobbyChatUpdate, LobbyCreated, LobbyEnter, LobbyId, SteamId,
 };
 // use steamworks_sys; — now via steamworks::sys with raw-bindings feature
 use sysinfo::{Pid, System};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager};
 
 // --- 全局系统信息实例 ---
@@ -165,7 +167,7 @@ async fn open_log_window(handle: tauri::AppHandle) {
         )
         .title("系統日誌 (System Logs)")
         .inner_size(800.0, 600.0)
-        .resizable(true)
+        .resizable(false)
         .decorations(false)
         .build();
     }
@@ -462,6 +464,40 @@ async fn main() {
         });
     _handles.push(h);
 
+    // LobbyChatMsg — 收到大厅聊天消息
+    let chat_history = app_state.chat_history.clone();
+    let client_for_chat = app_state.steam_client.clone();
+    let h = app_state
+        .steam_client
+        .register_callback(move |msg: LobbyChatMsg| {
+            // 跳过自己发送的消息（已在 send_chat_message 中立即添加）
+            let my_id = client_for_chat.user().steam_id();
+            if msg.user == my_id {
+                return;
+            }
+            let mut buf = [0u8; 4096];
+            let data = client_for_chat.matchmaking().get_lobby_chat_entry(
+                msg.lobby,
+                msg.chat_id,
+                &mut buf,
+            );
+            let text = String::from_utf8_lossy(data).to_string();
+            let sender_name = client_for_chat.friends().get_friend(msg.user).name();
+
+            let chat_msg = ChatMessage {
+                sender_id: msg.user.raw().to_string(),
+                sender_name,
+                text,
+                timestamp: chrono::Local::now().format("%H:%M:%S").to_string(),
+            };
+            chat_history.lock().push(chat_msg.clone());
+
+            if let Some(handle) = LOGGER.app_handle.lock().as_ref() {
+                let _ = handle.emit("chat-message", chat_msg);
+            }
+        });
+    _handles.push(h);
+
     let client_for_loop = app_state.steam_client.clone();
     thread::spawn(move || {
         while shutdown_rx.try_recv().is_err() {
@@ -475,6 +511,46 @@ async fn main() {
         .setup(|app| {
             *LOGGER.app_handle.lock() = Some(app.handle().clone());
             drain_pending_events();
+
+            // 系统托盘 - 原生菜单，系统自动定位
+            let show = MenuItem::with_id(app, "show", "显示窗口", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Steam P2P Tunnel")
+                .menu(&menu)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.center();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.center();
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .build(app)?;
+
             Ok(())
         })
         .manage(app_state.clone())
@@ -491,6 +567,9 @@ async fn main() {
             steam_commands::get_lobby_members,
             steam_commands::get_network_status,
             steam_commands::resolve_game_name,
+            steam_commands::get_local_user_id,
+            chat::send_chat_message,
+            chat::get_chat_history,
             open_log_window,
             get_log_history,
             get_memory_usage
