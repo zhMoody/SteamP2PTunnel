@@ -1,6 +1,73 @@
 use steamworks::networking_types::NetworkingConnectionState;
 use steamworks::Client;
 
+/// 等待 Steam SDR 中继网络就绪
+/// 策略：轮询 + 失败重试
+/// - timeout_secs: 最长总等待时间
+/// - max_retries: 失败后重新 init 的最大次数
+pub fn wait_for_relay_ready(client: &Client, timeout_secs: u64, max_retries: u32) -> bool {
+    use std::time::{Duration, Instant};
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(timeout_secs);
+    let mut retry_count = 0u32;
+
+    log::info!("⏳ 等待 SDR 中继网络就绪（最长 {} 秒）...", timeout_secs);
+
+    // 首次等待让 Steam 获取配置
+    std::thread::sleep(Duration::from_secs(3));
+
+    loop {
+        if start.elapsed() > timeout {
+            log::warn!("⚠️ SDR 中继等待超时");
+            return false;
+        }
+
+        // 通过认证状态间接判断中继是否就绪
+        // 当认证为 Current 时，中继通常也已就绪
+        match client.networking_sockets().get_authentication_status() {
+            Ok(status) => {
+                let status_str = format!("{:?}", status);
+                if status_str == "Current" {
+                    // 认证就绪后再等 5 秒让 ping 测量完成
+                    log::info!("✅ 认证就绪，等待 ping 测量完成...");
+                    std::thread::sleep(Duration::from_secs(5));
+
+                    // 二次确认认证仍然有效
+                    match client.networking_sockets().get_authentication_status() {
+                        Ok(s) if format!("{:?}", s) == "Current" => {
+                            log::info!("✅ SDR 中继网络就绪");
+                            return true;
+                        }
+                        _ => {
+                            retry_count += 1;
+                            if retry_count <= max_retries {
+                                log::warn!(
+                                    "⚠️ 认证失效，重试 {}/{}, 重新初始化...",
+                                    retry_count,
+                                    max_retries,
+                                );
+                                client.networking_utils().init_relay_network_access();
+                                client.networking_sockets().init_authentication().ok();
+                                std::thread::sleep(Duration::from_secs(5));
+                            } else {
+                                log::error!("🔴 已达到最大重试次数 {}", max_retries);
+                                return false;
+                            }
+                        }
+                    }
+                } else {
+                    log::info!("⏳ 认证={}, 等待中...", status_str);
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            }
+            Err(_) => {
+                std::thread::sleep(Duration::from_secs(2));
+            }
+        }
+    }
+}
+
 // === 底层 sys 调用（steamworks-rs 未封装的安全 API）===
 
 unsafe extern "C" fn steam_networking_debug_output(

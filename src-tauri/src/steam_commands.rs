@@ -185,7 +185,9 @@ pub async fn connect_to_host(
     if host_id != my_id {
         net_manager::start_network_client(&state, host_id, local_port).await
     } else {
-        Err(AppError::Network("Cannot connect to yourself. You are the host.".to_string()))
+        Err(AppError::Network(
+            "Cannot connect to yourself. You are the host.".to_string(),
+        ))
     }
 }
 
@@ -241,15 +243,23 @@ pub fn send_invite(state: State<'_, AppState>, friend_id_str: String) -> AppResu
 
     match lobby_id {
         Some(lobby_id) => {
-            let friends = state.steam_client.friends();
-            let friend = friends.get_friend(friend_id);
-            // connect 字符串即 lobby ID（已在 create_lobby 时通过 Rich Presence 设置）
-            friend.invite_user_to_game(&lobby_id.raw().to_string());
+            let mm_ptr = unsafe { steamworks::sys::SteamAPI_SteamMatchmaking_v009() };
+            let result = unsafe {
+                steamworks::sys::SteamAPI_ISteamMatchmaking_InviteUserToLobby(
+                    mm_ptr,
+                    lobby_id.raw(),
+                    friend_id.raw(),
+                )
+            };
+            let friend_name = state.steam_client.friends().get_friend(friend_id).name();
             log::info!(
-                "📨 已向好友 {} 发送游戏邀请（大厅={}）",
-                friend.name(),
-                lobby_id.raw()
+                "📨 InviteUserToLobby → {}: {}",
+                friend_name,
+                if result { "成功" } else { "失败" }
             );
+            if !result {
+                return Err(AppError::Network("邀请发送失败".to_string()));
+            }
             Ok(())
         }
         None => Err(AppError::Lobby("Not in a lobby".to_string())),
@@ -307,12 +317,17 @@ pub fn get_lobby_members(state: State<'_, AppState>) -> Vec<MemberInfo> {
                                         ping
                                     );
                                     match state {
-                                        NetworkingConnectionState::Connected => "P2P (Connected)".to_string(),
+                                        NetworkingConnectionState::Connected => {
+                                            "P2P (Connected)".to_string()
+                                        }
                                         _ => format!("{:?}", state),
                                     }
                                 }
                                 Err(_) => {
-                                    log::warn!("⚠️ 成员 {} 无法获取连接状态枚举值", friend_obj.name());
+                                    log::warn!(
+                                        "⚠️ 成员 {} 无法获取连接状态枚举值",
+                                        friend_obj.name()
+                                    );
                                     format!("ping={}", ping)
                                 }
                             };
